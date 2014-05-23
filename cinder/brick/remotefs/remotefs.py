@@ -47,6 +47,12 @@ class RemoteFsClient(object):
                 raise exception.InvalidParameterValue(
                     err=_('glusterfs_mount_point_base required'))
             self._mount_options = None
+        elif mount_type == "ukai":
+            self._mount_base = kwargs.get('ukai_mount_point_base', None)
+            if not self._mount_base:
+                raise exception.InvalidParameterValue(
+                    err=_('ukai_mount_point_base required'))
+            self._mount_options = None
         else:
             raise exception.ProtocolNotSupported(protocol=mount_type)
         self.root_helper = root_helper
