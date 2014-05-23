@@ -81,8 +81,8 @@ class UkaiDriver(nfs.RemoteFsDriver):
                        CONF.ukai_mount_options)
         self._remotefsclient = remotefs.RemoteFsClient(
             'ukai', root_helper, execute=execute,
-            nfs_mount_point_base=self.base,
-            nfs_mount_options=opts)
+            ukai_mount_point_base=self.base,
+            ukai_mount_options=opts)
 
     def set_execute(self, execute):
         super(UkaiDriver, self).set_execute(execute)
@@ -107,7 +107,7 @@ class UkaiDriver(nfs.RemoteFsDriver):
 
         self.shares = {}  # address : options
 
-        # Check if mount.nfs is installed
+        # Check if ukai is installed
         try:
             self._execute('ukai', check_exit_code=False, run_as_root=True)
         except OSError as exc:
@@ -116,14 +116,14 @@ class UkaiDriver(nfs.RemoteFsDriver):
             else:
                 raise exc
 
-    def _ensure_share_mounted(self, nfs_share):
+    def _ensure_share_mounted(self, ukai_share):
         mnt_flags = []
         if self.shares.get(ukai_share) is not None:
             mnt_flags = self.shares[ukai_share].split()
         self._remotefsclient.mount(ukai_share, mnt_flags)
 
     def _find_share(self, volume_size_in_gib):
-        """Choose NFS share among available ones for given volume size.
+        """Choose UKAI share among available ones for given volume size.
 
         For instances with more than one share that meets the criteria, the
         share with the least "allocated" space will be selected.
@@ -137,7 +137,7 @@ class UkaiDriver(nfs.RemoteFsDriver):
         target_share = None
         target_share_reserved = 0
 
-        for nfs_share in self._mounted_shares:
+        for ukai_share in self._mounted_shares:
             if not self._is_share_eligible(ukai_share, volume_size_in_gib):
                 continue
             total_size, total_available, total_allocated = \
@@ -158,7 +158,7 @@ class UkaiDriver(nfs.RemoteFsDriver):
 
         return target_share
 
-    def _is_share_eligible(self, nfs_share, volume_size_in_gib):
+    def _is_share_eligible(self, ukai_share, volume_size_in_gib):
         return True
 
     '''
