@@ -40,6 +40,13 @@ from cinder import utils
 from cinder.volume import driver
 from cinder.volume.drivers import nfs
 
+import sys
+print sys.path
+from ukai.ukai_config import UKAIConfig
+ukai_config = UKAIConfig()
+from ukai.ukai_metadata import UKAIMetadataCreate
+from ukai.ukai_data import UKAIDataCreate
+
 VERSION = '0.0.1'
 
 LOG = logging.getLogger(__name__)
@@ -116,12 +123,41 @@ class UkaiDriver(nfs.RemoteFsDriver):
             else:
                 raise exc
 
-    def _ensure_share_mounted(self, ukai_share):
-        mnt_flags = []
-        if self.shares.get(ukai_share) is not None:
-            mnt_flags = self.shares[ukai_share].split()
-        self._remotefsclient.mount(ukai_share, mnt_flags)
+    def _do_create_volume(self, volume):
+        '''Creates a volume on given remote share.
 
+        :param volume: volume reference
+        '''
+        volume_path = self.local_path(volume)
+        volume_size = volume['size']
+        print volume
+
+    def _ensure_shares_mounted(self):
+        self._mounted_shares = []
+
+        share_file =getattr(self.configuration,
+                            self.driver_prefix +
+                            '_shares_config')
+
+        for share in self._read_config_file(share_file):
+            self.shares[share] = None
+
+        LOG.debug("shares loaded: %s", self.shares)
+
+
+    def _ensure_share_mounted(self, ukai_share):
+        print '_ensure_share_mounted'
+        print ukai_share
+        print self.shares[ukai_share]
+
+
+    def _find_share(self, volume_size_in_gib):
+        target_share = None
+        for ukai_share in self._mounted_shares:
+            target_share = ukai_share
+        return (target_share)
+
+    '''
     def _find_share(self, volume_size_in_gib):
         """Choose UKAI share among available ones for given volume size.
 
@@ -157,6 +193,7 @@ class UkaiDriver(nfs.RemoteFsDriver):
         LOG.debug(_('Selected %s as target UKAI share.'), target_share)
 
         return target_share
+    '''
 
     def _is_share_eligible(self, ukai_share, volume_size_in_gib):
         return True
