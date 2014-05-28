@@ -98,6 +98,8 @@ class RemoteFsClient(object):
         self._execute('mkdir', '-p', mount_path, check_exit_code=0)
         if self._mount_type == 'nfs':
             self._mount_nfs(share, mount_path, flags)
+        elif self._mount_type == 'ukai':
+            self._mount_ukai(mount_path)
         else:
             self._do_mount(self._mount_type, share, mount_path,
                            self._mount_options, flags)
@@ -171,3 +173,9 @@ class RemoteFsClient(object):
         opt = '%s=%s' % (option, value) if value else option
         opts.append(opt)
         return ",".join(opts) if len(opts) > 1 else opts[0]
+
+    def _mount_ukai(self, mount_path):
+        """Mounts ukai."""
+        mnt_cmd = ['ukai', mount_path]
+        self._execute(*mnt_cmd, root_helper=self.root_helper,
+                      run_as_root=True, check_exit_code=0)

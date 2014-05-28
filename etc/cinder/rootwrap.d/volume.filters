@@ -75,6 +75,9 @@ netapp_nfs_find: RegExpFilter, find, root, find, ^[/]*([^/\0]+(/+)?)*$, -maxdept
 # cinder/volume/drivers/glusterfs.py
 chgrp: CommandFilter, chgrp, root
 
+# cinder/volume/drivers/ukaiblock.py
+ukai: CommandFilter, ukai, root
+
 # cinder/volumes/drivers/hds/hds.py:
 hus-cmd: CommandFilter, hus-cmd, root
 hus-cmd_local: CommandFilter, /usr/local/bin/hus-cmd, root
