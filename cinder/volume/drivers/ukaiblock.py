@@ -52,9 +52,6 @@ VERSION = '0.0.1'
 LOG = logging.getLogger(__name__)
 
 volume_opts = [
-    cfg.StrOpt('ukai_shares_config',
-               default='/etc/cinder/ukai_shares',
-               help='File with the list of available ukai shares'),
     cfg.StrOpt('ukai_mount_point_base',
                default='$state_path/mnt',
                help=('Base dir containing mount points for ukai shares.')),
@@ -100,26 +97,12 @@ class UkaiDriver(nfs.RemoteFsDriver):
         """Any initialization the volume driver does while starting."""
         super(UkaiDriver, self).do_setup(context)
 
-        config = self.configuration.ukai_shares_config
-        if not config:
-            msg = (_("There's no UKAI config file configured (%s)") %
-                   'ukai_shares_config')
-            LOG.warn(msg)
-            raise exception.UkaiException(msg)
-        if not os.path.exists(config):
-            msg = (_("UKAI config file at %(config)s doesn't exist") %
-                   {'config': config})
-            LOG.warn(msg)
-            raise exception.UkaiException(msg)
-
-        self.shares = {}  # address : options
-
         # Check if ukai is installed
         try:
-            self._execute('ukai', check_exit_code=False, run_as_root=True)
+            self._execute('mount.ukai', check_exit_code=False, run_as_root=True)
         except OSError as exc:
             if exc.errno == errno.ENOENT:
-                raise exception.UkaiException('ukai is not installed')
+                raise exception.UkaiException('mount.ukai is not installed')
             else:
                 raise exc
 
@@ -128,28 +111,25 @@ class UkaiDriver(nfs.RemoteFsDriver):
 
         :param volume: volume reference
         '''
+        LOG.debug('_do_create_volume')
         volume_path = self.local_path(volume)
         volume_size = volume['size']
-        print volume
+        LOG.debug(volume)
 
     def _ensure_shares_mounted(self):
         self._mounted_shares = []
 
-        share_file =getattr(self.configuration,
-                            self.driver_prefix +
-                            '_shares_config')
-
-        for share in self._read_config_file(share_file):
-            self.shares[share] = None
+        dummy_share = 'UKAI'
+        self._ensure_share_mounted(dummy_share)
+        self.shares[dummy_share] = None
 
         LOG.debug("shares loaded: %s", self.shares)
 
-
-    def _ensure_share_mounted(self, ukai_share):
-        print '_ensure_share_mounted'
-        print ukai_share
-        print self.shares[ukai_share]
-
+    def _ensure_share_mounted(self, dummy_share):
+        mnt_flags = []
+        if self.shares.get(dummy_share) is not None:
+            mnt_flags = self.shares[dummy_share].split()
+        self._remotefsclient.mount(dummy_share, mnt_flags)
 
     def _find_share(self, volume_size_in_gib):
         target_share = None
