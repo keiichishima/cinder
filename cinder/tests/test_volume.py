@@ -84,7 +84,8 @@ class FakeImageService:
     def show(self, context, image_id):
         return {'size': 2 * units.GiB,
                 'disk_format': 'raw',
-                'container_format': 'bare'}
+                'container_format': 'bare',
+                'status': 'active'}
 
 
 class BaseVolumeTestCase(test.TestCase):
@@ -1875,7 +1876,8 @@ class VolumeTestCase(BaseVolumeTestCase):
             def show(self, context, image_id):
                 return {'size': 2 * units.GiB + 1,
                         'disk_format': 'raw',
-                        'container_format': 'bare'}
+                        'container_format': 'bare',
+                        'status': 'active'}
 
         volume_api = cinder.volume.api.API(image_service=
                                            _ModifiedFakeImageService())
@@ -1892,7 +1894,26 @@ class VolumeTestCase(BaseVolumeTestCase):
                 return {'size': 2 * units.GiB,
                         'disk_format': 'raw',
                         'container_format': 'bare',
-                        'min_disk': 5}
+                        'min_disk': 5,
+                        'status': 'active'}
+
+        volume_api = cinder.volume.api.API(image_service=
+                                           _ModifiedFakeImageService())
+
+        self.assertRaises(exception.InvalidInput,
+                          volume_api.create,
+                          self.context, 2,
+                          'name', 'description', image_id=1)
+
+    def test_create_volume_with_deleted_imaged(self):
+        """Verify create volume from image will cause an error."""
+        class _ModifiedFakeImageService(FakeImageService):
+            def show(self, context, image_id):
+                return {'size': 2 * units.GiB,
+                        'disk_format': 'raw',
+                        'container_format': 'bare',
+                        'min_disk': 5,
+                        'status': 'deleted'}
 
         volume_api = cinder.volume.api.API(image_service=
                                            _ModifiedFakeImageService())
@@ -3046,7 +3067,6 @@ class ISCSITestCase(DriverTestCase):
     def setUp(self):
         super(ISCSITestCase, self).setUp()
         self.configuration = mox.MockObject(conf.Configuration)
-        self.configuration.num_iscsi_scan_tries = 3
         self.configuration.iscsi_num_targets = 100
         self.configuration.iscsi_target_prefix = 'iqn.2010-10.org.openstack:'
         self.configuration.iscsi_ip_address = '0.0.0.0'
