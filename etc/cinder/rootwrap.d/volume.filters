@@ -77,6 +77,9 @@ chgrp: CommandFilter, chgrp, root
 
 # cinder/volume/drivers/ukaiblock.py
 ukai: CommandFilter, ukai, root
+ukai_create_image: CommandFilter, ukai_create_image, root
+ukai_add_image: CommandFilter, ukai_add_image, root
+ukai_remove_image: CommandFilter, ukai_remove_image, root
 
 # cinder/volumes/drivers/hds/hds.py:
 hus-cmd: CommandFilter, hus-cmd, root

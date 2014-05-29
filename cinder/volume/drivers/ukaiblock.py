@@ -40,8 +40,6 @@ from cinder import utils
 from cinder.volume import driver
 from cinder.volume.drivers import nfs
 
-import sys
-print sys.path
 from ukai.ukai_config import UKAIConfig
 ukai_config = UKAIConfig()
 from ukai.ukai_metadata import UKAIMetadataCreate
@@ -99,10 +97,10 @@ class UkaiDriver(nfs.RemoteFsDriver):
 
         # Check if ukai is installed
         try:
-            self._execute('mount.ukai', check_exit_code=False, run_as_root=True)
+            self._execute('ukai', check_exit_code=False, run_as_root=True)
         except OSError as exc:
             if exc.errno == errno.ENOENT:
-                raise exception.UkaiException('mount.ukai is not installed')
+                raise exception.UkaiException('ukai is not installed')
             else:
                 raise exc
 
@@ -114,16 +112,22 @@ class UkaiDriver(nfs.RemoteFsDriver):
         LOG.debug('_do_create_volume')
         volume_path = self.local_path(volume)
         volume_size = volume['size']
-        LOG.debug(volume)
+        volume_name = volume['name']
+        self._execute('ukai_create_image',
+                       '-s %d' % (volume_size * units.GiB),
+                       '-b %d' % (4 * units.MiB),
+                       '-h 127.0.0.1',
+                       '-l 127.0.0.1',
+                       volume_name, run_as_root=True)
+        self._execute('ukai_add_image', volume_name)
 
     def _ensure_shares_mounted(self):
         self._mounted_shares = []
 
         dummy_share = 'UKAI'
         self._ensure_share_mounted(dummy_share)
+        self._mounted_shares.append(dummy_share)
         self.shares[dummy_share] = None
-
-        LOG.debug("shares loaded: %s", self.shares)
 
     def _ensure_share_mounted(self, dummy_share):
         mnt_flags = []
@@ -225,7 +229,11 @@ class UkaiDriver(nfs.RemoteFsDriver):
         return self._remotefsclient.get_mount_point(ukai_share)
 
     def _get_capacity_info(self, ukai_share):
-        return 1000000000000, 1000000000000, 0
+        LOG.info(_("UkaiDriver: get capacity info"))
+
+        capa = (1000000000000, 1000000000000, 0)
+        LOG.debug("volume capacity: total=%d, free=%d, used=%d" % capa)
+        return capa
 
     '''
     def _get_capacity_info(self, ukai_share):
