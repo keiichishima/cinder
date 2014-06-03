@@ -119,7 +119,25 @@ class UkaiDriver(nfs.RemoteFsDriver):
                        '-h 127.0.0.1',
                        '-l 127.0.0.1',
                        volume_name, run_as_root=True)
-        self._execute('ukai_add_image', volume_name)
+        self._execute('ukai_add_image',
+                      '-c 22223',
+                      volume_name)
+
+    def delete_volume(self, volume):
+        """Deletes a logical volume.
+
+        :param volume: volume reference
+        """
+        if not volume['provider_location']:
+            LOG.warn(_('Volume %s does not have provider_location specified, '
+                     'skipping'), volume['name'])
+            return
+
+        self._ensure_share_mounted(volume['provider_location'])
+
+        self._execute('ukai_remove_image',
+                      '-c 22223',
+                      volume['name'])
 
     def _ensure_shares_mounted(self):
         self._mounted_shares = []
