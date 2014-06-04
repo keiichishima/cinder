@@ -116,8 +116,8 @@ class UkaiDriver(nfs.RemoteFsDriver):
         self._execute('ukai_create_image',
                        '-s %d' % (volume_size * units.GiB),
                        '-b %d' % (4 * units.MiB),
-                       '-h 127.0.0.1',
-                       '-l 127.0.0.1',
+                       '-h', '127.0.0.1',
+                       '-l', '127.0.0.1',
                        volume_name, run_as_root=True)
         self._execute('ukai_add_image',
                       '-c 22223',
