@@ -40,10 +40,8 @@ from cinder import utils
 from cinder.volume import driver
 from cinder.volume.drivers import nfs
 
-from ukai.ukai_config import UKAIConfig
-ukai_config = UKAIConfig()
-from ukai.ukai_metadata import UKAIMetadataCreate
-from ukai.ukai_data import UKAIDataCreate
+from libukai.ukai_config import UKAIConfig
+from libukai.ukai_metadata import ukai_metadata_create
 
 VERSION = '0.0.1'
 
@@ -97,7 +95,7 @@ class UkaiDriver(nfs.RemoteFsDriver):
 
         # Check if ukai is installed
         try:
-            self._execute('ukai', check_exit_code=False, run_as_root=True)
+            self._execute('ukai_admin', check_exit_code=False, run_as_root=True)
         except OSError as exc:
             if exc.errno == errno.ENOENT:
                 raise exception.UkaiException('ukai is not installed')
@@ -113,14 +111,13 @@ class UkaiDriver(nfs.RemoteFsDriver):
         volume_path = self.local_path(volume)
         volume_size = volume['size']
         volume_name = volume['name']
-        self._execute('ukai_create_image',
-                       '-s %d' % (volume_size * units.GiB),
-                       '-b %d' % (4 * units.MiB),
-                       '-h', '127.0.0.1',
-                       '-l', '127.0.0.1',
-                       volume_name, run_as_root=True)
-        self._execute('ukai_add_image',
-                      '-c 22223',
+        self._execute('ukai_admin',
+                      'create_image',
+                      '-s %d' % (volume_size * units.GiB),
+                      '-b %d' % (4 * units.MiB),
+                      volume_name, run_as_root=True)
+        self._execute('ukai_admin',
+                      'add_image',
                       volume_name)
 
     def delete_volume(self, volume):
@@ -135,8 +132,8 @@ class UkaiDriver(nfs.RemoteFsDriver):
 
         self._ensure_share_mounted(volume['provider_location'])
 
-        self._execute('ukai_remove_image',
-                      '-c 22223',
+        self._execute('ukai_admin',
+                      'remove_image',
                       volume['name'])
 
     def _ensure_shares_mounted(self):
