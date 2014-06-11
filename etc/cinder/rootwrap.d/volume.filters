@@ -76,10 +76,8 @@ netapp_nfs_find: RegExpFilter, find, root, find, ^[/]*([^/\0]+(/+)?)*$, -maxdept
 chgrp: CommandFilter, chgrp, root
 
 # cinder/volume/drivers/ukaiblock.py
-ukai: CommandFilter, ukai, root
-ukai_create_image: CommandFilter, ukai_create_image, root
-ukai_add_image: CommandFilter, ukai_add_image, root
-ukai_remove_image: CommandFilter, ukai_remove_image, root
+ukai_fuse: CommandFilter, ukai_fuse, root
+ukai_admin: CommandFilter, ukai_admin, root
 
 # cinder/volumes/drivers/hds/hds.py:
 hus-cmd: CommandFilter, hus-cmd, root

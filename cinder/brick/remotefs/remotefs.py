@@ -176,6 +176,6 @@ class RemoteFsClient(object):
 
     def _mount_ukai(self, mount_path):
         """Mounts ukai."""
-        mnt_cmd = ['ukai', '-c 22223', '-p 22224', mount_path]
+        mnt_cmd = ['ukai_fuse', mount_path]
         self._execute(*mnt_cmd, root_helper=self.root_helper,
                       run_as_root=True, check_exit_code=0)
