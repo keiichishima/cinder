@@ -346,7 +346,15 @@ class VolumeManager(manager.SchedulerDependentManager):
     def delete_volume(self, context, volume_id, unmanage_only=False):
         """Deletes and unexports volume."""
         context = context.elevated()
-        volume_ref = self.db.volume_get(context, volume_id)
+
+        try:
+            volume_ref = self.db.volume_get(context, volume_id)
+        except exception.VolumeNotFound:
+            # NOTE(thingee): It could be possible for a volume to
+            # be deleted when resuming deletes from init_host().
+            LOG.info(_("Tried to delete volume %s, but it no longer exists, "
+                       "moving on") % (volume_id))
+            return True
 
         if context.project_id != volume_ref['project_id']:
             project_id = volume_ref['project_id']
@@ -455,10 +463,6 @@ class VolumeManager(manager.SchedulerDependentManager):
                                         snapshot_ref['id'],
                                         {'status': 'error'})
 
-        self.db.snapshot_update(context,
-                                snapshot_ref['id'], {'status': 'available',
-                                                     'progress': '100%'})
-
         vol_ref = self.db.volume_get(context, volume_id)
         if vol_ref.bootable:
             try:
@@ -470,7 +474,15 @@ class VolumeManager(manager.SchedulerDependentManager):
                                 " %(volume_id)s metadata") %
                               {'volume_id': volume_id,
                                'snapshot_id': snapshot_id})
+                self.db.snapshot_update(context,
+                                        snapshot_ref['id'],
+                                        {'status': 'error'})
                 raise exception.MetadataCopyFailure(reason=ex)
+
+        self.db.snapshot_update(context,
+                                snapshot_ref['id'], {'status': 'available',
+                                                     'progress': '100%'})
+
         LOG.info(_("snapshot %s: created successfully"), snapshot_ref['id'])
         self._notify_about_snapshot_usage(context, snapshot_ref, "create.end")
         return snapshot_id
@@ -672,13 +684,15 @@ class VolumeManager(manager.SchedulerDependentManager):
 
         """
         payload = {'volume_id': volume_id, 'image_id': image_meta['id']}
+        image_service = None
         try:
+            volume = self.db.volume_get(context, volume_id)
+
             # NOTE(flaper87): Verify the driver is enabled
             # before going forward. The exception will be caught
             # and the volume status updated.
             utils.require_driver_initialized(self.driver)
 
-            volume = self.db.volume_get(context, volume_id)
             image_service, image_id = \
                 glance.get_remote_image_service(context, image_meta['id'])
             self.driver.copy_volume_to_image(context, volume, image_service,
@@ -687,6 +701,13 @@ class VolumeManager(manager.SchedulerDependentManager):
                         "image (%(image_id)s) successfully"),
                       {'volume_id': volume_id, 'image_id': image_id})
         except Exception as error:
+            LOG.error(_("Error occurred while uploading volume %(volume_id)s "
+                        "to image %(image_id)s."),
+                      {'volume_id': volume_id, 'image_id': image_meta['id']})
+            if image_service is not None:
+                # Deletes the image if it is in queued or saving state
+                self._delete_image(context, image_meta['id'], image_service)
+
             with excutils.save_and_reraise_exception():
                 payload['message'] = unicode(error)
         finally:
@@ -697,6 +718,21 @@ class VolumeManager(manager.SchedulerDependentManager):
             else:
                 self.db.volume_update(context, volume_id,
                                       {'status': 'in-use'})
+
+    def _delete_image(self, context, image_id, image_service):
+        """Deletes an image stuck in queued or saving state."""
+        try:
+            image_meta = image_service.show(context, image_id)
+            image_status = image_meta.get('status')
+            if image_status == 'queued' or image_status == 'saving':
+                LOG.warn("Deleting image %(image_id)s in %(image_status)s "
+                         "state.",
+                         {'image_id': image_id,
+                          'image_status': image_status})
+                image_service.delete(context, image_id)
+        except Exception:
+            LOG.warn(_("Error occurred while deleting image %s."),
+                     image_id, exc_info=True)
 
     def initialize_connection(self, context, volume_id, connector):
         """Prepare volume for connection from host represented by connector.
