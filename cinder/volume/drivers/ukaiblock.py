@@ -142,7 +142,7 @@ class UkaiDriver(nfs.RemoteFsDriver):
     def _ensure_shares_mounted(self):
         self._mounted_shares = []
 
-        dummy_share = 'UKAI'
+        dummy_share = 'UKAIFUSE'
         self._ensure_share_mounted(dummy_share)
         self._mounted_shares.append(dummy_share)
         self.shares[dummy_share] = None
