@@ -78,6 +78,7 @@ chgrp: CommandFilter, chgrp, root
 # cinder/volume/drivers/ukaiblock.py
 ukai_fuse: CommandFilter, ukai_fuse, root
 ukai_admin: CommandFilter, ukai_admin, root
+truncate: CommandFilter, truncate, root
 
 # cinder/volumes/drivers/hds/hds.py:
 hus-cmd: CommandFilter, hus-cmd, root

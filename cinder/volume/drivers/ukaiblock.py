@@ -119,6 +119,9 @@ class UkaiDriver(nfs.RemoteFsDriver):
         self._execute('ukai_admin',
                       'add_image',
                       volume_name)
+        self._execute('truncate',
+                      '-s %d' % (volume_size * units.GiB),
+                      volume_path)
 
     def delete_volume(self, volume):
         """Deletes a logical volume.
