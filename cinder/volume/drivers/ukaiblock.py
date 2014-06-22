@@ -116,12 +116,6 @@ class UkaiDriver(nfs.RemoteFsDriver):
                       '-s %d' % (volume_size * units.GiB),
                       '-b %d' % (4 * units.MiB),
                       volume_name, run_as_root=True)
-        self._execute('ukai_admin',
-                      'add_image',
-                      volume_name)
-        self._execute('truncate',
-                      '-s %d' % (volume_size * units.GiB),
-                      volume_path)
 
     def delete_volume(self, volume):
         """Deletes a logical volume.
@@ -136,7 +130,7 @@ class UkaiDriver(nfs.RemoteFsDriver):
         self._ensure_share_mounted(volume['provider_location'])
 
         self._execute('ukai_admin',
-                      'remove_image',
+                      'destroy_image',
                       volume['name'])
 
     def _ensure_shares_mounted(self):
