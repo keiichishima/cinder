@@ -31,7 +31,7 @@ from cinder.image import image_utils
 from cinder.openstack.common import fileutils
 from cinder.openstack.common import log as logging
 from cinder.openstack.common import processutils
-from cinder import units
+from cinder.openstack.common import units
 from cinder import utils
 from cinder.volume.drivers import nfs
 
@@ -117,6 +117,39 @@ class GlusterfsDriver(nfs.RemoteFsDriver):
             if exc.errno == errno.ENOENT:
                 raise exception.GlusterfsException(
                     _('mount.glusterfs is not installed'))
+            else:
+                raise
+
+        self._refresh_mounts()
+
+    def _unmount_shares(self):
+        self._load_shares_config(self.configuration.glusterfs_shares_config)
+        for share in self.shares.keys():
+            try:
+                self._do_umount(True, share)
+            except Exception as exc:
+                LOG.warning(_('Exception during unmounting %s') % (exc))
+
+    def _do_umount(self, ignore_not_mounted, share):
+        mount_path = self._get_mount_point_for_share(share)
+        command = ['umount', mount_path]
+        try:
+            self._execute(*command, run_as_root=True)
+        except processutils.ProcessExecutionError as exc:
+            if ignore_not_mounted and 'not mounted' in exc.stderr:
+                LOG.info(_("%s is already umounted"), share)
+            else:
+                LOG.error(_("Failed to umount %(share)s, reason=%(stderr)s"),
+                          {'share': share, 'stderr': exc.stderr})
+                raise
+
+    def _refresh_mounts(self):
+        try:
+            self._unmount_shares()
+        except processutils.ProcessExecutionError as exc:
+            if 'target is busy' in exc.stderr:
+                LOG.warn(_("Failed to refresh mounts, reason=%s") %
+                         exc.stderr)
             else:
                 raise
 
@@ -251,8 +284,8 @@ class GlusterfsDriver(nfs.RemoteFsDriver):
         qcow2.
         """
 
-        LOG.debug(_("snapshot: %(snap)s, volume: %(vol)s, "
-                    "volume_size: %(size)s")
+        LOG.debug("snapshot: %(snap)s, volume: %(vol)s, "
+                  "volume_size: %(size)s"
                   % {'snap': snapshot['id'],
                      'vol': volume['id'],
                      'size': volume_size})
@@ -270,7 +303,7 @@ class GlusterfsDriver(nfs.RemoteFsDriver):
 
         path_to_new_vol = self._local_path_volume(volume)
 
-        LOG.debug(_("will copy from snapshot at %s") % path_to_snap_img)
+        LOG.debug("will copy from snapshot at %s" % path_to_snap_img)
 
         if self.configuration.glusterfs_qcow2_volumes:
             out_format = 'qcow2'
@@ -421,7 +454,7 @@ class GlusterfsDriver(nfs.RemoteFsDriver):
                     context,
                     snapshot['volume_id'],
                     connection_info)
-                LOG.debug(_('nova call result: %s') % result)
+                LOG.debug('nova call result: %s' % result)
             except Exception as e:
                 LOG.error(_('Call to Nova to create snapshot failed'))
                 LOG.exception(e)
@@ -449,7 +482,7 @@ class GlusterfsDriver(nfs.RemoteFsDriver):
                             'while creating snapshot.')
                     raise exception.GlusterfsException(msg)
 
-                LOG.debug(_('Status of snapshot %(id)s is now %(status)s') % {
+                LOG.debug('Status of snapshot %(id)s is now %(status)s' % {
                     'id': snapshot['id'],
                     'status': s['status']
                 })
@@ -474,8 +507,8 @@ class GlusterfsDriver(nfs.RemoteFsDriver):
 
             return
 
-        LOG.debug(_('create snapshot: %s') % snapshot)
-        LOG.debug(_('volume id: %s') % snapshot['volume_id'])
+        LOG.debug('create snapshot: %s' % snapshot)
+        LOG.debug('volume id: %s' % snapshot['volume_id'])
 
         path_to_disk = self._local_path_volume(snapshot['volume'])
         self._create_snapshot_offline(snapshot, path_to_disk)
@@ -582,7 +615,7 @@ class GlusterfsDriver(nfs.RemoteFsDriver):
 
         """
 
-        LOG.debug(_('deleting snapshot %s') % snapshot['id'])
+        LOG.debug('deleting snapshot %s' % snapshot['id'])
 
         volume_status = snapshot['volume']['status']
         if volume_status not in ['available', 'in-use']:
@@ -607,7 +640,7 @@ class GlusterfsDriver(nfs.RemoteFsDriver):
             return
 
         snapshot_file = snap_info[snapshot['id']]
-        LOG.debug(_('snapshot_file for this snap is %s') % snapshot_file)
+        LOG.debug('snapshot_file for this snap is %s' % snapshot_file)
 
         snapshot_path = '%s/%s' % (self._local_volume_dir(snapshot['volume']),
                                    snapshot_file)
@@ -645,7 +678,7 @@ class GlusterfsDriver(nfs.RemoteFsDriver):
                     break
             if base_id is None:
                 # This means we are deleting the oldest snapshot
-                msg = _('No %(base_id)s found for %(file)s') % {
+                msg = 'No %(base_id)s found for %(file)s' % {
                     'base_id': 'base_id',
                     'file': snapshot_file}
                 LOG.debug(msg)
@@ -721,7 +754,7 @@ class GlusterfsDriver(nfs.RemoteFsDriver):
                                 higher_file),
                                 None)
             if highest_file is None:
-                msg = _('No file depends on %s.') % higher_file
+                msg = 'No file depends on %s.' % higher_file
                 LOG.debug(msg)
 
             # Committing higher_file into snapshot_file
@@ -816,8 +849,8 @@ class GlusterfsDriver(nfs.RemoteFsDriver):
                     # Nova tasks completed successfully
                     break
                 else:
-                    msg = _('status of snapshot %s is '
-                            'still "deleting"... waiting') % snapshot['id']
+                    msg = ('status of snapshot %s is '
+                           'still "deleting"... waiting') % snapshot['id']
                     LOG.debug(msg)
                     time.sleep(increment)
                     seconds_elapsed += increment
@@ -1011,7 +1044,7 @@ class GlusterfsDriver(nfs.RemoteFsDriver):
         volume_path = self.local_path(volume)
         volume_size = volume['size']
 
-        LOG.debug(_("creating new volume at %s") % volume_path)
+        LOG.debug("creating new volume at %s" % volume_path)
 
         if os.path.exists(volume_path):
             msg = _('file already exists at %s') % volume_path
@@ -1042,7 +1075,7 @@ class GlusterfsDriver(nfs.RemoteFsDriver):
             except Exception as exc:
                 LOG.error(_('Exception during mounting %s') % (exc,))
 
-        LOG.debug(_('Available shares: %s') % self._mounted_shares)
+        LOG.debug('Available shares: %s' % self._mounted_shares)
 
     def _ensure_share_writable(self, path):
         """Ensure that the Cinder user can write to the share.
@@ -1104,7 +1137,7 @@ class GlusterfsDriver(nfs.RemoteFsDriver):
                 greatest_share = glusterfs_share
                 greatest_size = capacity
 
-        if volume_size_for * units.GiB > greatest_size:
+        if volume_size_for * units.Gi > greatest_size:
             raise exception.GlusterfsNoSuitableShareFound(
                 volume_size=volume_size_for)
         return greatest_share

@@ -16,6 +16,7 @@
 #    under the License.
 
 
+import math
 import mock
 import os
 import tempfile
@@ -25,10 +26,10 @@ from cinder import exception
 from cinder.image import image_utils
 from cinder.openstack.common import log as logging
 from cinder.openstack.common import timeutils
+from cinder.openstack.common import units
 from cinder import test
 from cinder.tests.image import fake as fake_image
 from cinder.tests.test_volume import DriverTestCase
-from cinder import units
 from cinder.volume import configuration as conf
 import cinder.volume.drivers.rbd as driver
 from cinder.volume.flows.manager import create_volume
@@ -144,6 +145,7 @@ class RBDTestCase(test.TestCase):
         self.cfg.rbd_secret_uuid = None
         self.cfg.rbd_user = None
         self.cfg.volume_dd_blocksize = '1M'
+        self.cfg.rbd_store_chunk_size = 4
 
         mock_exec = mock.Mock()
         mock_exec.return_value = ('', '')
@@ -171,8 +173,10 @@ class RBDTestCase(test.TestCase):
 
             self.driver.create_volume(self.volume)
 
+            chunk_size = self.cfg.rbd_store_chunk_size * units.Mi
+            order = int(math.log(chunk_size, 2))
             args = [client.ioctx, str(self.volume_name),
-                    self.volume_size * units.GiB]
+                    self.volume_size * units.Gi, order]
             kwargs = {'old_format': False,
                       'features': self.mock_rbd.RBD_FEATURE_LAYERING}
             self.mock_rbd.RBD.create.assert_called_once_with(*args, **kwargs)
@@ -192,14 +196,27 @@ class RBDTestCase(test.TestCase):
 
             self.driver.create_volume(self.volume)
 
+            chunk_size = self.cfg.rbd_store_chunk_size * units.Mi
+            order = int(math.log(chunk_size, 2))
             args = [client.ioctx, str(self.volume_name),
-                    self.volume_size * units.GiB]
+                    self.volume_size * units.Gi, order]
             kwargs = {'old_format': True,
                       'features': 0}
             self.mock_rbd.RBD.create.assert_called_once_with(*args, **kwargs)
             client.__enter__.assert_called_once()
             client.__exit__.assert_called_once()
             mock_supports_layering.assert_called_once()
+
+    @common_mocks
+    def test_delete_backup_snaps(self):
+        self.driver.rbd.Image.remove_snap = mock.Mock()
+        with mock.patch.object(self.driver, '_get_backup_snaps') as \
+                mock_get_backup_snaps:
+            mock_get_backup_snaps.return_value = [{'name': 'snap1'}]
+            rbd_image = self.driver.rbd.Image()
+            self.driver._delete_backup_snaps(rbd_image)
+            mock_get_backup_snaps.assert_called_once_with(rbd_image)
+            self.assertTrue(self.driver.rbd.Image.remove_snap.called)
 
     @common_mocks
     def test_delete_volume(self):
@@ -650,7 +667,7 @@ class RBDTestCase(test.TestCase):
                     'id': 'a720b3c0-d1f0-11e1-9b23-0800200c9a66'}
 
         self.mox.StubOutWithMock(self.driver, '_resize')
-        size = int(fake_size) * units.GiB
+        size = int(fake_size) * units.Gi
         self.driver._resize(fake_vol, size=size)
 
         self.mox.ReplayAll()

@@ -28,9 +28,9 @@ from cinder.openstack.common import excutils
 from cinder.openstack.common import importutils
 from cinder.openstack.common import log as logging
 from cinder.openstack.common import processutils
+from cinder.openstack.common import units
 from cinder import test
 from cinder.tests import utils as testutils
-from cinder import units
 from cinder import utils
 from cinder.volume import configuration as conf
 from cinder.volume.drivers.ibm import storwize_svc
@@ -626,7 +626,7 @@ port_speed!N/A
             return self._errors['CMMVC5753E']
 
         curr_size = int(self._volumes_list[vol_name]['capacity'])
-        addition = size * units.GiB
+        addition = size * units.Gi
         self._volumes_list[vol_name]['capacity'] = str(curr_size + addition)
         return ('', '')
 
@@ -1438,18 +1438,18 @@ class StorwizeSVCFakeDriver(storwize_svc.StorwizeSVCDriver):
 
     def _run_ssh(self, cmd, check_exit_code=True, attempts=1):
         try:
-            LOG.debug(_('Run CLI command: %s') % cmd)
+            LOG.debug('Run CLI command: %s' % cmd)
             utils.check_ssh_injection(cmd)
             ret = self.fake_storage.execute_command(cmd, check_exit_code)
             (stdout, stderr) = ret
-            LOG.debug(_('CLI output:\n stdout: %(stdout)s\n stderr: '
-                        '%(stderr)s') % {'stdout': stdout, 'stderr': stderr})
+            LOG.debug('CLI output:\n stdout: %(stdout)s\n stderr: '
+                      '%(stderr)s' % {'stdout': stdout, 'stderr': stderr})
 
         except processutils.ProcessExecutionError as e:
             with excutils.save_and_reraise_exception():
-                LOG.debug(_('CLI Exception output:\n stdout: %(out)s\n '
-                            'stderr: %(err)s') % {'out': e.stdout,
-                                                  'err': e.stderr})
+                LOG.debug('CLI Exception output:\n stdout: %(out)s\n '
+                          'stderr: %(err)s' % {'out': e.stdout,
+                                               'err': e.stderr})
 
         return ret
 
@@ -1503,14 +1503,7 @@ class StorwizeSVCDriverTestCase(test.TestCase):
         self.driver.db = self.db
         self.driver.do_setup(None)
         self.driver.check_for_setup_error()
-        self.sleeppatch = mock.patch('eventlet.greenthread.sleep')
-        self.sleeppatch.start()
         self.driver._helpers.check_fcmapping_interval = 0
-
-    def tearDown(self):
-        if self.USESIM:
-            self.sleeppatch.stop()
-        super(StorwizeSVCDriverTestCase, self).tearDown()
 
     def _set_flag(self, flag, value):
         group = self.driver.configuration.config_group
@@ -1764,7 +1757,7 @@ class StorwizeSVCDriverTestCase(test.TestCase):
 
         # Make sure volume attributes are as they should be
         attributes = self.driver._helpers.get_vdisk_attributes(volume['name'])
-        attr_size = float(attributes['capacity']) / units.GiB  # bytes to GB
+        attr_size = float(attributes['capacity']) / units.Gi  # bytes to GB
         self.assertEqual(attr_size, float(volume['size']))
         pool = self.driver.configuration.local_conf.storwize_svc_volpool_name
         self.assertEqual(attributes['mdisk_grp_name'], pool)
@@ -2229,7 +2222,8 @@ class StorwizeSVCDriverTestCase(test.TestCase):
         volume = self._create_volume()
         self.driver.extend_volume(volume, '13')
         attrs = self.driver._helpers.get_vdisk_attributes(volume['name'])
-        vol_size = int(attrs['capacity']) / units.GiB
+        vol_size = int(attrs['capacity']) / units.Gi
+
         self.assertAlmostEqual(vol_size, 13)
 
         snap = self._generate_vol_info(volume['name'], volume['id'])

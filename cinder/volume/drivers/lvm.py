@@ -31,7 +31,7 @@ from cinder.image import image_utils
 from cinder.openstack.common import fileutils
 from cinder.openstack.common import log as logging
 from cinder.openstack.common import processutils
-from cinder import units
+from cinder.openstack.common import units
 from cinder import utils
 from cinder.volume import driver
 from cinder.volume import utils as volutils
@@ -163,7 +163,7 @@ class LVMVolumeDriver(driver.VolumeDriver):
 
         # clear_volume expects sizes in MiB, we store integer GiB
         # be sure to convert before passing in
-        vol_sz_in_meg = size_in_g * units.KiB
+        vol_sz_in_meg = size_in_g * units.Ki
 
         volutils.clear_volume(
             vol_sz_in_meg, dev_path,
@@ -206,11 +206,11 @@ class LVMVolumeDriver(driver.VolumeDriver):
         # ThinLVM snapshot LVs.
         self.vg.activate_lv(snapshot['name'], is_snapshot=True)
 
-       # copy_volume expects sizes in MiB, we store integer GiB
-       # be sure to convert before passing in
+        # copy_volume expects sizes in MiB, we store integer GiB
+        # be sure to convert before passing in
         volutils.copy_volume(self.local_path(snapshot),
                              self.local_path(volume),
-                             snapshot['volume_size'] * units.KiB,
+                             snapshot['volume_size'] * units.Ki,
                              self.configuration.volume_dd_blocksize,
                              execute=self._execute)
 
@@ -298,13 +298,13 @@ class LVMVolumeDriver(driver.VolumeDriver):
 
         self.vg.activate_lv(temp_snapshot['name'], is_snapshot=True)
 
-       # copy_volume expects sizes in MiB, we store integer GiB
-       # be sure to convert before passing in
+        # copy_volume expects sizes in MiB, we store integer GiB
+        # be sure to convert before passing in
         try:
             volutils.copy_volume(
                 self.local_path(temp_snapshot),
                 self.local_path(volume),
-                src_vref['size'] * units.KiB,
+                src_vref['size'] * units.Ki,
                 self.configuration.volume_dd_blocksize,
                 execute=self._execute)
         finally:
@@ -342,7 +342,7 @@ class LVMVolumeDriver(driver.VolumeDriver):
     def _update_volume_stats(self):
         """Retrieve stats info from volume group."""
 
-        LOG.debug(_("Updating volume stats"))
+        LOG.debug("Updating volume stats")
         if self.vg is None:
             LOG.warning(_('Unable to update stats on non-initialized '
                           'Volume Group: %s'), self.configuration.volume_group)
@@ -488,6 +488,7 @@ class LVMISCSIDriver(LVMVolumeDriver, driver.ISCSIDriver):
             try:
                 # NOTE(jdg): For TgtAdm case iscsi_name is all we need
                 # should clean this all up at some point in the future
+
                 tid = self.target_helper.create_iscsi_target(
                     iscsi_name,
                     iscsi_target,
@@ -514,9 +515,11 @@ class LVMISCSIDriver(LVMVolumeDriver, driver.ISCSIDriver):
                                       volume_name)
         # NOTE(jdg): For TgtAdm case iscsi_name is the ONLY param we need
         # should clean this all up at some point in the future
-        model_update = self.target_helper.ensure_export(context, volume,
-                                                        iscsi_name,
-                                                        volume_path)
+        model_update = self.target_helper.ensure_export(
+            context, volume,
+            iscsi_name,
+            volume_path,
+            self.configuration.volume_group)
         if model_update:
             self.db.volume_update(context, volume['id'], model_update)
 
@@ -530,7 +533,10 @@ class LVMISCSIDriver(LVMVolumeDriver, driver.ISCSIDriver):
 
         volume_path = "/dev/%s/%s" % (vg, volume['name'])
 
-        data = self.target_helper.create_export(context, volume, volume_path)
+        data = self.target_helper.create_export(context,
+                                                volume,
+                                                volume_path,
+                                                self.configuration)
         return {
             'provider_location': data['location'],
             'provider_auth': data['auth'],

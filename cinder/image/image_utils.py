@@ -35,7 +35,7 @@ from cinder.openstack.common import fileutils
 from cinder.openstack.common import imageutils
 from cinder.openstack.common import log as logging
 from cinder.openstack.common import processutils
-from cinder import units
+from cinder.openstack.common import units
 from cinder import utils
 from cinder.volume import utils as volume_utils
 
@@ -175,14 +175,14 @@ def fetch_to_volume_format(context, image_service,
             # qemu-img is not installed but we do have a RAW image.  As a
             # result we only need to copy the image to the destination and then
             # return.
-            LOG.debug(_('Copying image from %(tmp)s to volume %(dest)s - '
-                        'size: %(size)s') % {'tmp': tmp, 'dest': dest,
-                                             'size': image_meta['size']})
+            LOG.debug('Copying image from %(tmp)s to volume %(dest)s - '
+                      'size: %(size)s' % {'tmp': tmp, 'dest': dest,
+                                          'size': image_meta['size']})
             volume_utils.copy_volume(tmp, dest, image_meta['size'], blocksize)
             return
 
         data = qemu_img_info(tmp)
-        virt_size = data.virtual_size / units.GiB
+        virt_size = data.virtual_size / units.Gi
 
         # NOTE(xqueralt): If the image virtual size doesn't fit in the
         # requested volume there is no point on resizing it because it will

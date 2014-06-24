@@ -43,6 +43,8 @@ from cinder import keymgr
 from cinder.openstack.common import fileutils
 from cinder.openstack.common import importutils
 from cinder.openstack.common import jsonutils
+from cinder.openstack.common import timeutils
+from cinder.openstack.common import units
 import cinder.policy
 from cinder import quota
 from cinder import test
@@ -52,7 +54,6 @@ from cinder.tests import fake_notifier
 from cinder.tests.image import fake as fake_image
 from cinder.tests.keymgr import fake as fake_keymgr
 from cinder.tests import utils as tests_utils
-from cinder import units
 from cinder import utils
 import cinder.volume
 from cinder.volume import configuration as conf
@@ -82,7 +83,7 @@ class FakeImageService:
         pass
 
     def show(self, context, image_id):
-        return {'size': 2 * units.GiB,
+        return {'size': 2 * units.Gi,
                 'disk_format': 'raw',
                 'container_format': 'bare',
                 'status': 'active'}
@@ -134,6 +135,89 @@ class BaseVolumeTestCase(test.TestCase):
                  'available': '2.50',
                  'lv_count': '2',
                  'uuid': 'vR1JU3-FAKE-C4A9-PQFh-Mctm-9FwA-Xwzc1m'}]
+
+
+class AvailabilityZoneTestCase(BaseVolumeTestCase):
+    def test_list_availability_zones_cached(self):
+        volume_api = cinder.volume.api.API()
+        with mock.patch.object(volume_api.db,
+                               'service_get_all_by_topic') as get_all:
+            get_all.return_value = [
+                {
+                    'availability_zone': 'a',
+                    'disabled': False,
+                },
+            ]
+            azs = volume_api.list_availability_zones(enable_cache=True)
+            self.assertEqual([{"name": 'a', 'available': True}], list(azs))
+            self.assertIsNotNone(volume_api.availability_zones_last_fetched)
+            self.assertTrue(get_all.called)
+            volume_api.list_availability_zones(enable_cache=True)
+            self.assertEqual(1, get_all.call_count)
+
+    def test_list_availability_zones_no_cached(self):
+        volume_api = cinder.volume.api.API()
+        with mock.patch.object(volume_api.db,
+                               'service_get_all_by_topic') as get_all:
+            get_all.return_value = [
+                {
+                    'availability_zone': 'a',
+                    'disabled': False,
+                },
+            ]
+            azs = volume_api.list_availability_zones(enable_cache=False)
+            self.assertEqual([{"name": 'a', 'available': True}], list(azs))
+            self.assertIsNone(volume_api.availability_zones_last_fetched)
+
+        with mock.patch.object(volume_api.db,
+                               'service_get_all_by_topic') as get_all:
+            get_all.return_value = [
+                {
+                    'availability_zone': 'a',
+                    'disabled': True,
+                },
+            ]
+            azs = volume_api.list_availability_zones(enable_cache=False)
+            self.assertEqual([{"name": 'a', 'available': False}], list(azs))
+            self.assertIsNone(volume_api.availability_zones_last_fetched)
+
+    def test_list_availability_zones_refetched(self):
+        timeutils.set_time_override()
+        volume_api = cinder.volume.api.API()
+        with mock.patch.object(volume_api.db,
+                               'service_get_all_by_topic') as get_all:
+            get_all.return_value = [
+                {
+                    'availability_zone': 'a',
+                    'disabled': False,
+                },
+            ]
+            azs = volume_api.list_availability_zones(enable_cache=True)
+            self.assertEqual([{"name": 'a', 'available': True}], list(azs))
+            self.assertIsNotNone(volume_api.availability_zones_last_fetched)
+            last_fetched = volume_api.availability_zones_last_fetched
+            self.assertTrue(get_all.called)
+            volume_api.list_availability_zones(enable_cache=True)
+            self.assertEqual(1, get_all.call_count)
+
+            # The default cache time is 3600, push past that...
+            timeutils.advance_time_seconds(3800)
+            get_all.return_value = [
+                {
+                    'availability_zone': 'a',
+                    'disabled': False,
+                },
+                {
+                    'availability_zone': 'b',
+                    'disabled': False,
+                },
+            ]
+            azs = volume_api.list_availability_zones(enable_cache=True)
+            azs = sorted([n['name'] for n in azs])
+            self.assertEqual(['a', 'b'], azs)
+            self.assertEqual(2, get_all.call_count)
+            self.assertGreater(volume_api.availability_zones_last_fetched,
+                               last_fetched)
 
 
 class VolumeTestCase(BaseVolumeTestCase):
@@ -332,7 +416,7 @@ class VolumeTestCase(BaseVolumeTestCase):
         """Test setting availability_zone correctly during volume create."""
         volume_api = cinder.volume.api.API()
 
-        def fake_list_availability_zones():
+        def fake_list_availability_zones(enable_cache=False):
             return ({'name': 'az1', 'available': True},
                     {'name': 'az2', 'available': True},
                     {'name': 'default-az', 'available': True})
@@ -1041,7 +1125,7 @@ class VolumeTestCase(BaseVolumeTestCase):
         """Test volume can't be created from snapshot in a different az."""
         volume_api = cinder.volume.api.API()
 
-        def fake_list_availability_zones():
+        def fake_list_availability_zones(enable_cache=False):
             return ({'name': 'nova', 'available': True},
                     {'name': 'az2', 'available': True})
 
@@ -1166,10 +1250,11 @@ class VolumeTestCase(BaseVolumeTestCase):
         self.assertIsNone(vol['attached_host'])
         admin_metadata = vol['volume_admin_metadata']
         self.assertEqual(len(admin_metadata), 2)
-        self.assertEqual(admin_metadata[0]['key'], 'readonly')
-        self.assertEqual(admin_metadata[0]['value'], 'True')
-        self.assertEqual(admin_metadata[1]['key'], 'attached_mode')
-        self.assertEqual(admin_metadata[1]['value'], 'ro')
+        expected = dict(readonly='True', attached_mode='ro')
+        ret = {}
+        for item in admin_metadata:
+            ret.update({item['key']: item['value']})
+        self.assertDictMatch(ret, expected)
         connector = {'initiator': 'iqn.2012-07.org.fake:01'}
         conn_info = self.volume.initialize_connection(self.context,
                                                       volume_id, connector)
@@ -1209,10 +1294,12 @@ class VolumeTestCase(BaseVolumeTestCase):
         self.assertEqual(vol['attached_host'], 'fake-host')
         admin_metadata = vol['volume_admin_metadata']
         self.assertEqual(len(admin_metadata), 2)
-        self.assertEqual(admin_metadata[0]['key'], 'readonly')
-        self.assertEqual(admin_metadata[0]['value'], 'False')
-        self.assertEqual(admin_metadata[1]['key'], 'attached_mode')
-        self.assertEqual(admin_metadata[1]['value'], 'rw')
+        expected = dict(readonly='False', attached_mode='rw')
+        ret = {}
+        for item in admin_metadata:
+            ret.update({item['key']: item['value']})
+        self.assertDictMatch(ret, expected)
+
         connector = {'initiator': 'iqn.2012-07.org.fake:01'}
         conn_info = self.volume.initialize_connection(self.context,
                                                       volume_id, connector)
@@ -1254,10 +1341,11 @@ class VolumeTestCase(BaseVolumeTestCase):
         self.assertIsNone(vol['attached_host'])
         admin_metadata = vol['volume_admin_metadata']
         self.assertEqual(len(admin_metadata), 2)
-        self.assertEqual(admin_metadata[0]['key'], 'readonly')
-        self.assertEqual(admin_metadata[0]['value'], 'True')
-        self.assertEqual(admin_metadata[1]['key'], 'attached_mode')
-        self.assertEqual(admin_metadata[1]['value'], 'ro')
+        expected = dict(readonly='True', attached_mode='ro')
+        ret = {}
+        for item in admin_metadata:
+            ret.update({item['key']: item['value']})
+        self.assertDictMatch(ret, expected)
         connector = {'initiator': 'iqn.2012-07.org.fake:01'}
         conn_info = self.volume.initialize_connection(self.context,
                                                       volume_id, connector)
@@ -1285,10 +1373,11 @@ class VolumeTestCase(BaseVolumeTestCase):
         self.assertEqual(vol['attached_host'], 'fake-host')
         admin_metadata = vol['volume_admin_metadata']
         self.assertEqual(len(admin_metadata), 2)
-        self.assertEqual(admin_metadata[0]['key'], 'readonly')
-        self.assertEqual(admin_metadata[0]['value'], 'True')
-        self.assertEqual(admin_metadata[1]['key'], 'attached_mode')
-        self.assertEqual(admin_metadata[1]['value'], 'ro')
+        expected = dict(readonly='True', attached_mode='ro')
+        ret = {}
+        for item in admin_metadata:
+            ret.update({item['key']: item['value']})
+        self.assertDictMatch(ret, expected)
         connector = {'initiator': 'iqn.2012-07.org.fake:01'}
         conn_info = self.volume.initialize_connection(self.context,
                                                       volume_id, connector)
@@ -1334,10 +1423,11 @@ class VolumeTestCase(BaseVolumeTestCase):
         self.assertEqual(vol['attach_status'], "detached")
         admin_metadata = vol['volume_admin_metadata']
         self.assertEqual(len(admin_metadata), 2)
-        self.assertEqual(admin_metadata[0]['key'], 'readonly')
-        self.assertEqual(admin_metadata[0]['value'], 'True')
-        self.assertEqual(admin_metadata[1]['key'], 'attached_mode')
-        self.assertEqual(admin_metadata[1]['value'], 'rw')
+        expected = dict(readonly='True', attached_mode='rw')
+        ret = {}
+        for item in admin_metadata:
+            ret.update({item['key']: item['value']})
+        self.assertDictMatch(ret, expected)
 
         db.volume_update(self.context, volume_id, {'status': 'available'})
         self.assertRaises(exception.InvalidVolumeAttachMode,
@@ -1353,10 +1443,11 @@ class VolumeTestCase(BaseVolumeTestCase):
         self.assertEqual(vol['attach_status'], "detached")
         admin_metadata = vol['volume_admin_metadata']
         self.assertEqual(len(admin_metadata), 2)
-        self.assertEqual(admin_metadata[0]['key'], 'readonly')
-        self.assertEqual(admin_metadata[0]['value'], 'True')
-        self.assertEqual(admin_metadata[1]['key'], 'attached_mode')
-        self.assertEqual(admin_metadata[1]['value'], 'rw')
+        expected = dict(readonly='True', attached_mode='rw')
+        ret = {}
+        for item in admin_metadata:
+            ret.update({item['key']: item['value']})
+        self.assertDictMatch(ret, expected)
 
     def test_run_api_attach_detach_volume_with_wrong_attach_mode(self):
         # Not allow using 'read-write' mode attach readonly volume
@@ -1975,7 +2066,7 @@ class VolumeTestCase(BaseVolumeTestCase):
         """Verify that an image which is too big will fail correctly."""
         class _ModifiedFakeImageService(FakeImageService):
             def show(self, context, image_id):
-                return {'size': 2 * units.GiB + 1,
+                return {'size': 2 * units.Gi + 1,
                         'disk_format': 'raw',
                         'container_format': 'bare',
                         'status': 'active'}
@@ -1992,7 +2083,7 @@ class VolumeTestCase(BaseVolumeTestCase):
         """Verify volumes smaller than image minDisk will cause an error."""
         class _ModifiedFakeImageService(FakeImageService):
             def show(self, context, image_id):
-                return {'size': 2 * units.GiB,
+                return {'size': 2 * units.Gi,
                         'disk_format': 'raw',
                         'container_format': 'bare',
                         'min_disk': 5,
@@ -2010,7 +2101,7 @@ class VolumeTestCase(BaseVolumeTestCase):
         """Verify create volume from image will cause an error."""
         class _ModifiedFakeImageService(FakeImageService):
             def show(self, context, image_id):
-                return {'size': 2 * units.GiB,
+                return {'size': 2 * units.Gi,
                         'disk_format': 'raw',
                         'container_format': 'bare',
                         'min_disk': 5,
@@ -2282,7 +2373,7 @@ class VolumeTestCase(BaseVolumeTestCase):
         """Test volume can't be cloned from an other volume in different az."""
         volume_api = cinder.volume.api.API()
 
-        def fake_list_availability_zones():
+        def fake_list_availability_zones(enable_cache=False):
             return ({'name': 'nova', 'available': True},
                     {'name': 'az2', 'available': True})
 

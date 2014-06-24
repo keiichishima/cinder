@@ -74,6 +74,7 @@ netapp_nfs_find: RegExpFilter, find, root, find, ^[/]*([^/\0]+(/+)?)*$, -maxdept
 
 # cinder/volume/drivers/glusterfs.py
 chgrp: CommandFilter, chgrp, root
+umount: CommandFilter, umount, root
 
 # cinder/volume/drivers/ukaiblock.py
 ukai_fuse: CommandFilter, ukai_fuse, root
@@ -83,6 +84,9 @@ truncate: CommandFilter, truncate, root
 # cinder/volumes/drivers/hds/hds.py:
 hus-cmd: CommandFilter, hus-cmd, root
 hus-cmd_local: CommandFilter, /usr/local/bin/hus-cmd, root
+
+# cinder/volumes/drivers/hds/hnas_backend.py
+ssc: CommandFilter, ssc, root
 
 # cinder/brick/initiator/connector.py:
 ls: CommandFilter, ls, root
