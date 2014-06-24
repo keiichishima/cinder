@@ -35,7 +35,7 @@ from cinder import exception
 from cinder.image import image_utils
 from cinder.openstack.common import log as logging
 from cinder.openstack.common import processutils as putils
-from cinder import units
+from cinder.openstack.common import units
 from cinder import utils
 from cinder.volume import driver
 from cinder.volume.drivers import nfs
@@ -113,8 +113,8 @@ class UkaiDriver(nfs.RemoteFsDriver):
         volume_name = volume['name']
         self._execute('ukai_admin',
                       'create_image',
-                      '-s %d' % (volume_size * units.GiB),
-                      '-b %d' % (4 * units.MiB),
+                      '-s %d' % (volume_size * units.Gi),
+                      '-b %d' % (4 * units.Mi),
                       volume_name, run_as_root=True)
 
     def delete_volume(self, volume):
