@@ -33,6 +33,7 @@ from oslo.config import cfg
 from cinder.brick.remotefs import remotefs
 from cinder import exception
 from cinder.image import image_utils
+from cinder.openstack.common.gettextutils import _
 from cinder.openstack.common import log as logging
 from cinder.openstack.common import processutils as putils
 from cinder.openstack.common import units
