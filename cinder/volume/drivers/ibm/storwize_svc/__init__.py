@@ -35,11 +35,14 @@ Limitations:
 """
 
 import math
+import time
+
 from oslo.config import cfg
 
 from cinder import context
 from cinder import exception
 from cinder.openstack.common import excutils
+from cinder.openstack.common.gettextutils import _
 from cinder.openstack.common import log as logging
 from cinder.openstack.common import loopingcall
 from cinder.openstack.common import units
@@ -47,6 +50,7 @@ from cinder import utils
 from cinder.volume.drivers.ibm.storwize_svc import helpers as storwize_helpers
 from cinder.volume.drivers.san import san
 from cinder.volume import volume_types
+from cinder.zonemanager import utils as fczm_utils
 
 LOG = logging.getLogger(__name__)
 
@@ -137,6 +141,9 @@ class StorwizeSVCDriver(san.SanDriver):
                        'system_id': None,
                        'code_level': None,
                        }
+        # Storwize has the limitation that can not burst more than 3 new ssh
+        # connections within 1 second. So slow down the initialization.
+        time.sleep(1)
 
     def do_setup(self, ctxt):
         """Check that we have all configuration details from the storage."""
@@ -289,6 +296,7 @@ class StorwizeSVCDriver(san.SanDriver):
         return self._helpers.get_vdisk_params(self.configuration, self._state,
                                               type_id, volume_type=volume_type)
 
+    @fczm_utils.AddFCZone
     @utils.synchronized('storwize-host', external=True)
     def initialize_connection(self, volume, connector):
         """Perform the necessary work so that an iSCSI/FC connection can
@@ -419,9 +427,9 @@ class StorwizeSVCDriver(san.SanDriver):
                             break
                     else:
                         LOG.warning(_('Unable to find a preferred node match '
-                                    'for node %(node)s in the list of '
-                                    'available WWPNs on %(host)s. '
-                                    'Using first available.') %
+                                      'for node %(node)s in the list of '
+                                      'available WWPNs on %(host)s. '
+                                      'Using first available.') %
                                     {'node': preferred_node,
                                      'host': host_name})
                         properties['target_wwn'] = conn_wwpns[0]
@@ -459,6 +467,7 @@ class StorwizeSVCDriver(san.SanDriver):
 
         return i_t_map
 
+    @fczm_utils.RemoveFCZone
     @utils.synchronized('storwize-host', external=True)
     def terminate_connection(self, volume, connector, **kwargs):
         """Cleanup after an iSCSI connection has been terminated.

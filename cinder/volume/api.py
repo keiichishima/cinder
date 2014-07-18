@@ -32,6 +32,7 @@ from cinder import flow_utils
 from cinder.image import glance
 from cinder import keymgr
 from cinder.openstack.common import excutils
+from cinder.openstack.common.gettextutils import _
 from cinder.openstack.common import log as logging
 from cinder.openstack.common import timeutils
 from cinder.openstack.common import uuidutils
@@ -110,13 +111,6 @@ class API(base.Base):
         self.key_manager = keymgr.API()
         super(API, self).__init__(db_driver)
 
-    def _valid_availability_zone(self, availability_zone):
-        azs = self.list_availability_zones(enable_cache=True)
-        names = set([az['name'] for az in azs])
-        if CONF.storage_availability_zone:
-            names.add(CONF.storage_availability_zone)
-        return availability_zone in names
-
     def list_availability_zones(self, enable_cache=False):
         """Describe the known availability zones
 
@@ -174,13 +168,13 @@ class API(base.Base):
                         "You should omit the argument.")
                 raise exception.InvalidInput(reason=msg)
 
-        def check_volume_az_zone(availability_zone):
-            try:
-                return self._valid_availability_zone(availability_zone)
-            except exception.CinderException:
-                LOG.exception(_("Unable to query if %s is in the "
-                                "availability zone set"), availability_zone)
-                return False
+        # Determine the valid availability zones that the volume could be
+        # created in (a task in the flow will/can use this information to
+        # ensure that the availability zone requested is valid).
+        raw_zones = self.list_availability_zones(enable_cache=True)
+        availability_zones = set([az['name'] for az in raw_zones])
+        if CONF.storage_availability_zone:
+            availability_zones.add(CONF.storage_availability_zone)
 
         create_what = {
             'context': context,
@@ -198,13 +192,12 @@ class API(base.Base):
             'backup_source_volume': backup_source_volume,
             'optional_args': {'is_quota_committed': False}
         }
-
         try:
             flow_engine = create_volume.get_flow(self.scheduler_rpcapi,
                                                  self.volume_rpcapi,
                                                  self.db,
                                                  self.image_service,
-                                                 check_volume_az_zone,
+                                                 availability_zones,
                                                  create_what)
         except Exception:
             LOG.exception(_("Failed to create api volume flow"))
@@ -400,10 +393,10 @@ class API(base.Base):
         if volume['migration_status']:
             return
 
-        if (volume['status'] != 'in-use' and
+        if (volume['status'] != 'in-use' or
                 volume['attach_status'] != 'attached'):
             msg = (_("Unable to detach volume. Volume status must be 'in-use' "
-                     "and attached_status must be 'attached' to detach. "
+                     "and attach_status must be 'attached' to detach. "
                      "Currently: status: '%(status)s', "
                      "attach_status: '%(attach_status)s'") %
                    {'status': volume['status'],
@@ -743,7 +736,7 @@ class API(base.Base):
                 volume_image_metadata = self.get_volume_image_metadata(context,
                                                                        volume)
                 custom_property_set = (set(volume_image_metadata).difference
-                                      (set(glance_core_properties)))
+                                       (set(glance_core_properties)))
                 if custom_property_set:
                     metadata.update(dict(properties=dict((custom_property,
                                                           volume_image_metadata

@@ -272,6 +272,11 @@
 # Port on which OpenStack Volume API listens (integer value)
 #osapi_volume_listen_port=8776
 
+# Number of workers for OpenStack Volume API service. The
+# default is equal to the number of CPUs available. (integer
+# value)
+#osapi_volume_workers=<None>
+
 
 #
 # Options defined in cinder.test
@@ -764,11 +769,11 @@
 #fatal_deprecations=false
 
 # The format for an instance that is passed with the log
-# message.  (string value)
+# message. (string value)
 #instance_format="[instance: %(uuid)s] "
 
 # The format for an instance UUID that is passed with the log
-# message.  (string value)
+# message. (string value)
 #instance_uuid_format="[instance: %(uuid)s] "
 
 # The name of a logging configuration file. This file is
@@ -800,7 +805,7 @@
 #log_dir=<None>
 
 # Use syslog for logging. Existing syslog format is DEPRECATED
-# during I, and will chang in J to honor RFC5424. (boolean
+# during I, and will change in J to honor RFC5424. (boolean
 # value)
 #use_syslog=false
 
@@ -889,6 +894,15 @@
 # Multiplier used for weighing volume capacity. Negative
 # numbers mean to stack vs spread. (floating point value)
 #allocated_capacity_weight_multiplier=-1.0
+
+
+#
+# Options defined in cinder.scheduler.weights.volume_number
+#
+
+# Multiplier used for weighing volume number. Negative numbers
+# mean to spread vs stack. (floating point value)
+#volume_number_multiplier=-1.0
 
 
 #
@@ -997,7 +1011,9 @@
 # "-c3" for idle only priority. (string value)
 #volume_clear_ionice=<None>
 
-# iSCSI target user-land tool to use (string value)
+# iSCSI target user-land tool to use. tgtadm is default, use
+# lioadm for LIO iSCSI support, iseradm for the ISER protocol,
+# or fake for testing. (string value)
 #iscsi_helper=tgtadm
 
 # Volume configuration file storage directory (string value)
@@ -1018,6 +1034,14 @@
 # The default block size used when copying/clearing volumes
 # (string value)
 #volume_dd_blocksize=1M
+
+# The blkio cgroup name to be used to limit bandwidth of
+# volume copy (string value)
+#volume_copy_blkio_cgroup_name=cinder-volume-copy
+
+# The upper limit of bandwidth of volume copy. 0 => unlimited
+# (integer value)
+#volume_copy_bps_limit=0
 
 
 #
@@ -1282,8 +1306,8 @@
 # value)
 #volume_group=cinder-volumes
 
-# If set, create lvms with multiple mirrors. Note that this
-# requires lvm_mirrors + 2 pvs with available space (integer
+# If >0, create LVs with multiple mirrors. Note that this
+# requires lvm_mirrors + 2 PVs with available space (integer
 # value)
 #lvm_mirrors=0
 
@@ -1574,6 +1598,11 @@
 # Volumes will be chunked into objects of this size (in
 # megabytes). (integer value)
 #rbd_store_chunk_size=4
+
+# Timeout value (in seconds) used when connecting to ceph
+# cluster. If value < 0, no timeout is set and default
+# librados value is used. (integer value)
+#rados_connect_timeout=-1
 
 
 #
@@ -1936,7 +1965,7 @@
 # Deprecated group/name - [DEFAULT]/sql_connection
 # Deprecated group/name - [DATABASE]/sql_connection
 # Deprecated group/name - [sql]/connection
-#connection=sqlite:///$state_path/$sqlite_db
+#connection=sqlite:///$state_path/cinder.sqlite
 
 # The SQL mode to be used for MySQL sessions. This option,
 # including the default, overrides any server-set SQL mode. To

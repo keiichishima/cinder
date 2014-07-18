@@ -23,6 +23,7 @@ from cinder.api import common
 from cinder.api.openstack import wsgi
 from cinder.api import xmlutil
 from cinder import exception
+from cinder.openstack.common.gettextutils import _
 from cinder.openstack.common import log as logging
 from cinder.openstack.common import uuidutils
 from cinder import utils
@@ -273,8 +274,9 @@ class VolumeController(wsgi.Controller):
             search_opts['metadata'] = ast.literal_eval(search_opts['metadata'])
 
         context = req.environ['cinder.context']
-        remove_invalid_options(context,
-                               search_opts, self._get_volume_search_options())
+        utils.remove_invalid_filter_options(context,
+                                            search_opts,
+                                            self._get_volume_search_options())
 
         volumes = self.volume_api.get_all(context, marker=None, limit=None,
                                           sort_key='created_at',
@@ -441,19 +443,3 @@ class VolumeController(wsgi.Controller):
 
 def create_resource(ext_mgr):
     return wsgi.Resource(VolumeController(ext_mgr))
-
-
-def remove_invalid_options(context, search_options, allowed_search_options):
-    """Remove search options that are not valid for non-admin API/context."""
-    if context.is_admin:
-        # Allow all options
-        return
-    # Otherwise, strip out all unknown options
-    unknown_options = [opt for opt in search_options
-                       if opt not in allowed_search_options]
-    bad_options = ", ".join(unknown_options)
-    log_msg = _("Removing options '%(bad_options)s'"
-                " from query") % {'bad_options': bad_options}
-    LOG.debug(log_msg)
-    for opt in unknown_options:
-        del search_options[opt]

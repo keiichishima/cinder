@@ -29,6 +29,7 @@ from cinder.brick.local_dev import lvm as lvm
 from cinder import exception
 from cinder.image import image_utils
 from cinder.openstack.common import fileutils
+from cinder.openstack.common.gettextutils import _
 from cinder.openstack.common import log as logging
 from cinder.openstack.common import processutils
 from cinder.openstack.common import units
@@ -44,8 +45,8 @@ volume_opts = [
                help='Name for the VG that will contain exported volumes'),
     cfg.IntOpt('lvm_mirrors',
                default=0,
-               help='If set, create lvms with multiple mirrors. Note that '
-                    'this requires lvm_mirrors + 2 pvs with available space'),
+               help='If >0, create LVs with multiple mirrors. Note that '
+                    'this requires lvm_mirrors + 2 PVs with available space'),
     cfg.StrOpt('lvm_type',
                default='default',
                help='Type of LVM volumes to deploy; (default or thin)'),
@@ -573,9 +574,9 @@ class LVMISCSIDriver(LVMVolumeDriver, driver.ISCSIDriver):
             try:
                 (vg for vg in vg_list if vg['name'] == dest_vg).next()
             except StopIteration:
-                message = ("Destination Volume Group %s does not exist" %
+                message = (_("Destination Volume Group %s does not exist") %
                            dest_vg)
-                LOG.error(_('%s'), message)
+                LOG.error(message)
                 return false_ret
 
             helper = utils.get_root_helper()

@@ -33,6 +33,7 @@ from oslo.config import cfg
 
 from cinder.backup.driver import BackupDriver
 from cinder import exception
+from cinder.openstack.common.gettextutils import _
 from cinder.openstack.common import log as logging
 from cinder.openstack.common import processutils
 from cinder import utils
@@ -308,7 +309,7 @@ class TSMBackupDriver(BackupDriver):
         """Perform the actual restore operation.
 
         :param backup_path: the path the backup was created from, this
-        identifes the backup to tsm
+        identifies the backup to tsm
         :param restore_path: volume path to restore into
         :param vol_id: volume id
         :param backup_mode: mode used to create the backup ('image' or 'file')
@@ -324,8 +325,8 @@ class TSMBackupDriver(BackupDriver):
             restore_cmd.append('-replace=yes')  # suppress prompt
 
         restore_cmd.extend(['-quiet',
-                           '-password=%s' % self.tsm_password,
-                           backup_path])
+                            '-password=%s' % self.tsm_password,
+                            backup_path])
 
         if restore_path != backup_path:
             restore_cmd.append(restore_path)

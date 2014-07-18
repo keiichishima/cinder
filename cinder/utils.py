@@ -24,13 +24,13 @@ import hashlib
 import inspect
 import os
 import pyclbr
-import random
 import re
 import shutil
 import stat
 import sys
 import tempfile
 
+from Crypto.Random import random
 from eventlet import pools
 from oslo.config import cfg
 import paramiko
@@ -43,6 +43,7 @@ from xml.sax import saxutils
 
 from cinder.brick.initiator import connector
 from cinder import exception
+from cinder.openstack.common.gettextutils import _
 from cinder.openstack.common import importutils
 from cinder.openstack.common import lockutils
 from cinder.openstack.common import log as logging
@@ -381,26 +382,24 @@ def generate_password(length=20, symbolgroups=DEFAULT_PASSWORD_SYMBOLS):
     Believed to be reasonably secure (with a reasonable password length!)
 
     """
-    r = random.SystemRandom()
-
     # NOTE(jerdfelt): Some password policies require at least one character
     # from each group of symbols, so start off with one random character
     # from each symbol group
-    password = [r.choice(s) for s in symbolgroups]
+    password = [random.choice(s) for s in symbolgroups]
     # If length < len(symbolgroups), the leading characters will only
     # be from the first length groups. Try our best to not be predictable
     # by shuffling and then truncating.
-    r.shuffle(password)
+    random.shuffle(password)
     password = password[:length]
     length -= len(password)
 
     # then fill with random characters from all symbol groups
     symbols = ''.join(symbolgroups)
-    password.extend([r.choice(symbols) for _i in xrange(length)])
+    password.extend([random.choice(symbols) for _i in xrange(length)])
 
     # finally shuffle to ensure first x characters aren't from a
     # predictable group
-    r.shuffle(password)
+    random.shuffle(password)
 
     return ''.join(password)
 
@@ -783,6 +782,50 @@ def get_file_gid(path):
     return os.stat(path).st_gid
 
 
+def _get_disk_of_partition(devpath, st=None):
+    """Returns a disk device path from a partition device path, and stat for
+    the device. If devpath is not a partition, devpath is returned as it is.
+    For example, '/dev/sda' is returned for '/dev/sda1', and '/dev/disk1' is
+    for '/dev/disk1p1' ('p' is prepended to the partition number if the disk
+    name ends with numbers).
+    """
+    if st is None:
+        st = os.stat(devpath)
+    diskpath = re.sub('(?:(?<=\d)p)?\d+$', '', devpath)
+    if diskpath != devpath:
+        try:
+            st = os.stat(diskpath)
+            if stat.S_ISBLK(st.st_mode):
+                return (diskpath, st)
+        except OSError:
+            pass
+    # devpath is not a partition
+    return (devpath, st)
+
+
+def get_blkdev_major_minor(path, lookup_for_file=True):
+    """Get the device's "major:minor" number of a block device to control
+    I/O ratelimit of the specified path.
+    If lookup_for_file is True and the path is a regular file, lookup a disk
+    device which the file lies on and returns the result for the device.
+    """
+    st = os.stat(path)
+    if stat.S_ISBLK(st.st_mode):
+        path, st = _get_disk_of_partition(path, st)
+        return '%d:%d' % (os.major(st.st_rdev), os.minor(st.st_rdev))
+    elif stat.S_ISCHR(st.st_mode):
+        # No I/O ratelimit control is provided for character devices
+        return None
+    elif lookup_for_file:
+        # lookup the mounted disk which the file lies on
+        out, _err = execute('df', path)
+        devpath = out.split("\n")[1].split()[0]
+        return get_blkdev_major_minor(devpath, False)
+    else:
+        msg = _("Unable to get a block device for file \'%s\'") % path
+        raise exception.Error(msg)
+
+
 def check_string_length(value, name, min_length=0, max_length=None):
     """Check the length of specified string
     :param value: the value of the string
@@ -846,3 +889,21 @@ def add_visible_admin_metadata(volume):
         volume['metadata'].update(visible_admin_meta)
     else:
         volume['metadata'] = visible_admin_meta
+
+
+def remove_invalid_filter_options(context, filters,
+                                  allowed_search_options):
+    """Remove search options that are not valid
+    for non-admin API/context.
+    """
+    if context.is_admin:
+        # Allow all options
+        return
+    # Otherwise, strip out all unknown options
+    unknown_options = [opt for opt in filters
+                       if opt not in allowed_search_options]
+    bad_options = ", ".join(unknown_options)
+    log_msg = "Removing options '%s' from query." % bad_options
+    LOG.debug(log_msg)
+    for opt in unknown_options:
+        del filters[opt]

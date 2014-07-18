@@ -28,9 +28,11 @@ from oslo import messaging
 from cinder import context
 from cinder import db
 from cinder import exception
+from cinder.openstack.common.gettextutils import _
 from cinder.openstack.common import importutils
 from cinder.openstack.common import log as logging
 from cinder.openstack.common import loopingcall
+from cinder.openstack.common import processutils
 from cinder.openstack.common import service
 from cinder import rpc
 from cinder import version
@@ -57,7 +59,10 @@ service_opts = [
                help='IP address on which OpenStack Volume API listens'),
     cfg.IntOpt('osapi_volume_listen_port',
                default=8776,
-               help='Port on which OpenStack Volume API listens'), ]
+               help='Port on which OpenStack Volume API listens'),
+    cfg.IntOpt('osapi_volume_workers',
+               help='Number of workers for OpenStack Volume API service. '
+                    'The default is equal to the number of CPUs available.'), ]
 
 CONF = cfg.CONF
 CONF.register_opts(service_opts)
@@ -289,13 +294,14 @@ class WSGIService(object):
         self.app = self.loader.load_app(name)
         self.host = getattr(CONF, '%s_listen' % name, "0.0.0.0")
         self.port = getattr(CONF, '%s_listen_port' % name, 0)
-        self.workers = getattr(CONF, '%s_workers' % name, None)
+        self.workers = getattr(CONF, '%s_workers' % name,
+                               processutils.get_worker_count())
         if self.workers < 1:
             LOG.warn(_("Value of config option %(name)s_workers must be "
                        "integer greater than 1.  Input value ignored.") %
                      {'name': name})
             # Reset workers to default
-            self.workers = None
+            self.workers = processutils.get_worker_count()
         self.server = wsgi.Server(name,
                                   self.app,
                                   host=self.host,
@@ -351,6 +357,14 @@ class WSGIService(object):
 
         """
         self.server.wait()
+
+    def reset(self):
+        """Reset server greenpool size to default.
+
+        :returns: None
+
+        """
+        self.server.reset()
 
 
 def process_launcher():

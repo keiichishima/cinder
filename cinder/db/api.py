@@ -215,10 +215,11 @@ def volume_create(context, values):
     return IMPL.volume_create(context, values)
 
 
-def volume_data_get_for_host(context, host):
+def volume_data_get_for_host(context, host, count_only=False):
     """Get (volume_count, gigabytes) for project."""
     return IMPL.volume_data_get_for_host(context,
-                                         host)
+                                         host,
+                                         count_only)
 
 
 def volume_data_get_for_project(context, project_id):
@@ -763,9 +764,9 @@ def backup_get(context, backup_id):
     return IMPL.backup_get(context, backup_id)
 
 
-def backup_get_all(context):
+def backup_get_all(context, filters=None):
     """Get all backups."""
-    return IMPL.backup_get_all(context)
+    return IMPL.backup_get_all(context, filters=filters)
 
 
 def backup_get_all_by_host(context, host):
@@ -778,9 +779,10 @@ def backup_create(context, values):
     return IMPL.backup_create(context, values)
 
 
-def backup_get_all_by_project(context, project_id):
+def backup_get_all_by_project(context, project_id, filters=None):
     """Get all backups belonging to a project."""
-    return IMPL.backup_get_all_by_project(context, project_id)
+    return IMPL.backup_get_all_by_project(context, project_id,
+                                          filters=filters)
 
 
 def backup_update(context, backup_id, values):

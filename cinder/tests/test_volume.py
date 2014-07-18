@@ -50,6 +50,7 @@ from cinder import quota
 from cinder import test
 from cinder.tests.brick.fake_lvm import FakeBrickLVM
 from cinder.tests import conf_fixture
+from cinder.tests import fake_driver
 from cinder.tests import fake_notifier
 from cinder.tests.image import fake as fake_image
 from cinder.tests.keymgr import fake as fake_keymgr
@@ -276,7 +277,6 @@ class VolumeTestCase(BaseVolumeTestCase):
                           self.volume.create_volume,
                           self.context, volume_id)
 
-        # NOTE(flaper87): The volume status should be error_deleting.
         volume = db.volume_get(context.get_admin_context(), volume_id)
         self.assertEqual(volume.status, "error")
         db.volume_destroy(context.get_admin_context(), volume_id)
@@ -310,7 +310,6 @@ class VolumeTestCase(BaseVolumeTestCase):
                           self.volume.delete_volume,
                           self.context, volume_id)
 
-        # NOTE(flaper87): The volume status should be error.
         volume = db.volume_get(context.get_admin_context(), volume_id)
         self.assertEqual(volume.status, "error_deleting")
         db.volume_destroy(context.get_admin_context(), volume_id)
@@ -1230,6 +1229,33 @@ class VolumeTestCase(BaseVolumeTestCase):
                                                           connector)
             self.assertIsNone(conn_info['data']['qos_specs'])
 
+    @mock.patch.object(fake_driver.FakeISCSIDriver, 'create_export')
+    @mock.patch.object(db, 'volume_get')
+    @mock.patch.object(db, 'volume_update')
+    def test_initialize_connection_export_failure(self,
+                                                  _mock_volume_get,
+                                                  _mock_volume_update,
+                                                  _mock_create_export):
+        """Test exception path for create_export failure."""
+        _fake_admin_meta = {'fake-key': 'fake-value'}
+        _fake_volume = {'volume_type_id': 'fake_type_id',
+                        'name': 'fake_name',
+                        'host': 'fake_host',
+                        'id': 'fake_volume_id',
+                        'volume_admin_metadata': _fake_admin_meta}
+
+        _mock_volume_get.return_value = _fake_volume
+        _mock_volume_update.return_value = _fake_volume
+        _mock_create_export.side_effect = exception.CinderException
+
+        connector = {'ip': 'IP', 'initiator': 'INITIATOR'}
+
+        self.assertRaises(exception.VolumeBackendAPIException,
+                          self.volume.initialize_connection,
+                          self.context,
+                          'fake_volume_id',
+                          connector)
+
     def test_run_attach_detach_volume_for_instance(self):
         """Make sure volume can be attached and detached from instance."""
         mountpoint = "/dev/sdf"
@@ -1490,8 +1516,8 @@ class VolumeTestCase(BaseVolumeTestCase):
         self.assertEqual(admin_metadata[0]['key'], 'readonly')
         self.assertEqual(admin_metadata[0]['value'], 'True')
 
-    @mock.patch.object(db, 'volume_get')
     @mock.patch.object(cinder.volume.api.API, 'update')
+    @mock.patch.object(db, 'volume_get')
     def test_reserve_volume_success(self, volume_get, volume_update):
         fake_volume = {
             'id': FAKE_UUID,
@@ -2173,6 +2199,14 @@ class VolumeTestCase(BaseVolumeTestCase):
         volume = tests_utils.create_volume(self.context, **self.volume_params)
         self.assertRaises(exception.InvalidVolume, volume_api.begin_detaching,
                           self.context, volume)
+        volume['status'] = "in-use"
+        volume['attach_status'] = "detached"
+        # Should raise an error since not attached
+        self.assertRaises(exception.InvalidVolume, volume_api.begin_detaching,
+                          self.context, volume)
+        volume['attach_status'] = "attached"
+        # Ensure when attached no exception raised
+        volume_api.begin_detaching(self.context, volume)
 
     def test_begin_roll_detaching_volume(self):
         """Test begin_detaching and roll_detaching functions."""
@@ -2566,7 +2600,10 @@ class VolumeTestCase(BaseVolumeTestCase):
                                            volume_type_id=old_vol_type['id'])
         if snap:
             self._create_snapshot(volume['id'], size=volume['size'])
-        host_obj = {'host': 'newhost', 'capabilities': {}}
+        if driver or diff_equal:
+            host_obj = {'host': CONF.host, 'capabilities': {}}
+        else:
+            host_obj = {'host': 'newhost', 'capabilities': {}}
 
         reserve_opts = {'volumes': 1, 'gigabytes': volume['size']}
         QUOTAS.add_volume_type_opts(self.context,
@@ -2607,10 +2644,15 @@ class VolumeTestCase(BaseVolumeTestCase):
             volumes_in_use = 0
 
         # check properties
-        if not exc:
+        if driver or diff_equal:
             self.assertEqual(volume['volume_type_id'], vol_type['id'])
             self.assertEqual(volume['status'], 'available')
-            self.assertEqual(volume['host'], 'newhost')
+            self.assertEqual(volume['host'], CONF.host)
+            self.assertEqual(volumes_in_use, 1)
+        elif not exc:
+            self.assertEqual(volume['volume_type_id'], old_vol_type['id'])
+            self.assertEqual(volume['status'], 'retyping')
+            self.assertEqual(volume['host'], CONF.host)
             self.assertEqual(volumes_in_use, 1)
         else:
             self.assertEqual(volume['volume_type_id'], old_vol_type['id'])
@@ -3496,14 +3538,9 @@ class FibreChannelTestCase(DriverTestCase):
     """Test Case for FibreChannelDriver."""
     driver_name = "cinder.volume.driver.FibreChannelDriver"
 
-    def setUp(self):
-        super(FibreChannelTestCase, self).setUp()
-        self.driver = driver.FibreChannelDriver()
-        self.driver.do_setup(None)
-
     def test_initialize_connection(self):
         self.assertRaises(NotImplementedError,
-                          self.driver.initialize_connection, {}, {})
+                          self.volume.driver.initialize_connection, {}, {})
 
     def test_validate_connector(self):
         """validate_connector() successful use case.
@@ -3513,33 +3550,33 @@ class FibreChannelTestCase(DriverTestCase):
         """
         connector = {'wwpns': ["not empty"],
                      'wwnns': ["not empty"]}
-        self.driver.validate_connector(connector)
+        self.volume.driver.validate_connector(connector)
 
     def test_validate_connector_no_wwpns(self):
         """validate_connector() throws exception when it has no wwpns."""
         connector = {'wwnns': ["not empty"]}
         self.assertRaises(exception.VolumeDriverException,
-                          self.driver.validate_connector, connector)
+                          self.volume.driver.validate_connector, connector)
 
     def test_validate_connector_empty_wwpns(self):
         """validate_connector() throws exception when it has empty wwpns."""
         connector = {'wwpns': [],
                      'wwnns': ["not empty"]}
         self.assertRaises(exception.VolumeDriverException,
-                          self.driver.validate_connector, connector)
+                          self.volume.driver.validate_connector, connector)
 
     def test_validate_connector_no_wwnns(self):
         """validate_connector() throws exception when it has no wwnns."""
         connector = {'wwpns': ["not empty"]}
         self.assertRaises(exception.VolumeDriverException,
-                          self.driver.validate_connector, connector)
+                          self.volume.driver.validate_connector, connector)
 
     def test_validate_connector_empty_wwnns(self):
         """validate_connector() throws exception when it has empty wwnns."""
         connector = {'wwnns': [],
                      'wwpns': ["not empty"]}
         self.assertRaises(exception.VolumeDriverException,
-                          self.driver.validate_connector, connector)
+                          self.volume.driver.validate_connector, connector)
 
 
 class VolumePolicyTestCase(test.TestCase):

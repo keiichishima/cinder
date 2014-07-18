@@ -48,6 +48,7 @@ from cinder import flow_utils
 from cinder.image import glance
 from cinder import manager
 from cinder.openstack.common import excutils
+from cinder.openstack.common.gettextutils import _
 from cinder.openstack.common import importutils
 from cinder.openstack.common import jsonutils
 from cinder.openstack.common import log as logging
@@ -62,7 +63,6 @@ from cinder.volume.flows.manager import manage_existing
 from cinder.volume import rpcapi as volume_rpcapi
 from cinder.volume import utils as volume_utils
 from cinder.volume import volume_types
-from cinder.zonemanager.fc_zone_manager import ZoneManager
 
 from eventlet.greenpool import GreenPool
 
@@ -180,7 +180,6 @@ class VolumeManager(manager.SchedulerDependentManager):
             db=self.db,
             host=self.host)
 
-        self.zonemanager = None
         try:
             self.extra_capabilities = jsonutils.loads(
                 self.driver.configuration.extra_capabilities)
@@ -200,14 +199,6 @@ class VolumeManager(manager.SchedulerDependentManager):
         """
 
         ctxt = context.get_admin_context()
-        if self.configuration.safe_get('zoning_mode') == 'fabric':
-            self.zonemanager = ZoneManager(configuration=self.configuration)
-            LOG.info(_("Starting FC Zone Manager %(zm_version)s,"
-                       " Driver %(drv_name)s %(drv_version)s") %
-                     {'zm_version': self.zonemanager.get_version(),
-                      'drv_name': self.zonemanager.driver.__class__.__name__,
-                      'drv_version': self.zonemanager.driver.get_version()})
-
         LOG.info(_("Starting volume driver %(driver_name)s (%(version)s)") %
                  {'driver_name': self.driver.__class__.__name__,
                   'version': self.driver.get_version()})
@@ -578,7 +569,8 @@ class VolumeManager(manager.SchedulerDependentManager):
                         volume_metadata.get('attached_mode') != mode):
                     msg = _("being attached by different mode")
                     raise exception.InvalidVolume(reason=msg)
-            elif volume['status'] != "available":
+            elif (not volume['migration_status'] and
+                  volume['status'] != "available"):
                 msg = _("status must be available or attaching")
                 raise exception.InvalidVolume(reason=msg)
 
@@ -633,6 +625,9 @@ class VolumeManager(manager.SchedulerDependentManager):
                                              instance_uuid,
                                              host_name_sanitized,
                                              mountpoint)
+            if volume['migration_status']:
+                self.db.volume_update(context, volume_id,
+                                      {'migration_status': None})
             self._notify_about_volume_usage(context, volume, "attach.end")
         return do_attach()
 
@@ -791,16 +786,22 @@ class VolumeManager(manager.SchedulerDependentManager):
             LOG.debug("Volume %s: creating export", volume_id)
             model_update = self.driver.create_export(context.elevated(),
                                                      volume)
+        except exception.CinderException:
+            err_msg = (_('Unable to create export for volume %(volume_id)s') %
+                       {'volume_id': volume_id})
+            LOG.exception(err_msg)
+            raise exception.VolumeBackendAPIException(data=err_msg)
+
+        try:
             if model_update:
                 volume = self.db.volume_update(context,
                                                volume_id,
                                                model_update)
         except exception.CinderException as ex:
-            if model_update:
-                LOG.exception(_("Failed updating model of volume %(volume_id)s"
-                              " with driver provided model %(model)s") %
-                              {'volume_id': volume_id, 'model': model_update})
-                raise exception.ExportFailure(reason=ex)
+            LOG.exception(_("Failed updating model of volume %(volume_id)s"
+                          " with driver provided model %(model)s") %
+                          {'volume_id': volume_id, 'model': model_update})
+            raise exception.ExportFailure(reason=ex)
 
         try:
             conn_info = self.driver.initialize_connection(volume, connector)
@@ -838,13 +839,7 @@ class VolumeManager(manager.SchedulerDependentManager):
                                if volume_metadata.get('readonly') == 'True'
                                else 'rw')
             conn_info['data']['access_mode'] = access_mode
-        # NOTE(skolathur): If volume_type is fibre_channel, invoke
-        # FCZoneManager to add access control via FC zoning.
-        vol_type = conn_info.get('driver_volume_type', None)
-        mode = self.configuration.zoning_mode
-        LOG.debug("Zoning Mode: %s", mode)
-        if vol_type == 'fibre_channel' and self.zonemanager:
-            self._add_or_delete_fc_connection(conn_info, 1)
+
         return conn_info
 
     def terminate_connection(self, context, volume_id, connector, force=False):
@@ -859,17 +854,8 @@ class VolumeManager(manager.SchedulerDependentManager):
 
         volume_ref = self.db.volume_get(context, volume_id)
         try:
-            conn_info = self.driver.terminate_connection(volume_ref,
-                                                         connector,
-                                                         force=force)
-            # NOTE(skolathur): If volume_type is fibre_channel, invoke
-            # FCZoneManager to remove access control via FC zoning.
-            if conn_info:
-                vol_type = conn_info.get('driver_volume_type', None)
-                mode = self.configuration.zoning_mode
-                LOG.debug("Zoning Mode: %s", mode)
-                if vol_type == 'fibre_channel' and self.zonemanager:
-                    self._add_or_delete_fc_connection(conn_info, 0)
+            self.driver.terminate_connection(volume_ref, connector,
+                                             force=force)
         except Exception as err:
             err_msg = (_('Unable to terminate volume connection: %(err)s')
                        % {'err': err})
@@ -1011,6 +997,8 @@ class VolumeManager(manager.SchedulerDependentManager):
 
         # Delete the source volume (if it fails, don't fail the migration)
         try:
+            if status_update['status'] == 'in-use':
+                self.detach_volume(ctxt, volume_id)
             self.delete_volume(ctxt, volume_id)
         except Exception as ex:
             msg = _("Failed to delete migration source vol %(vol)s: %(err)s")
@@ -1018,10 +1006,20 @@ class VolumeManager(manager.SchedulerDependentManager):
 
         self.db.finish_volume_migration(ctxt, volume_id, new_volume_id)
         self.db.volume_destroy(ctxt, new_volume_id)
-        updates = {'migration_status': None}
         if status_update:
+            updates = {'migration_status': 'completing'}
             updates.update(status_update)
+        else:
+            updates = {'migration_status': None}
         self.db.volume_update(ctxt, volume_id, updates)
+
+        if status_update:
+            rpcapi.attach_volume(ctxt,
+                                 volume,
+                                 volume['instance_uuid'],
+                                 volume['attached_host'],
+                                 volume['mountpoint'],
+                                 'rw')
         return volume['id']
 
     def migrate_volume(self, ctxt, volume_id, host, force_host_copy=False,
@@ -1279,11 +1277,11 @@ class VolumeManager(manager.SchedulerDependentManager):
                 with excutils.save_and_reraise_exception():
                     _retype_error(context, volume_id, old_reservations,
                                   new_reservations, status_update)
-
-        self.db.volume_update(context, volume_id,
-                              {'volume_type_id': new_type_id,
-                               'host': host['host'],
-                               'status': status_update['status']})
+        else:
+            self.db.volume_update(context, volume_id,
+                                  {'volume_type_id': new_type_id,
+                                   'host': host['host'],
+                                   'status': status_update['status']})
 
         if old_reservations:
             QUOTAS.commit(context, old_reservations, project_id=project_id)
@@ -1314,34 +1312,3 @@ class VolumeManager(manager.SchedulerDependentManager):
         # Update volume stats
         self.stats['allocated_capacity_gb'] += volume_ref['size']
         return volume_ref['id']
-
-    def _add_or_delete_fc_connection(self, conn_info, zone_op):
-        """Add or delete connection control to fibre channel network.
-
-        In case of fibre channel, when zoning mode is set as fabric
-        ZoneManager is invoked to apply FC zoning configuration to the network
-        using initiator and target WWNs used for attach/detach.
-
-        params conn_info: connector passed by volume driver after
-        initialize_connection or terminate_connection.
-        params zone_op: Indicates if it is a zone add or delete operation
-        zone_op=0 for delete connection and 1 for add connection
-        """
-        _initiator_target_map = None
-        if 'initiator_target_map' in conn_info['data']:
-            _initiator_target_map = conn_info['data']['initiator_target_map']
-        LOG.debug("Initiator Target map:%s", _initiator_target_map)
-        # NOTE(skolathur): Invoke Zonemanager to handle automated FC zone
-        # management when vol_type is fibre_channel and zoning_mode is fabric
-        # Initiator_target map associating each initiator WWN to one or more
-        # target WWN is passed to ZoneManager to add or update zone config.
-        LOG.debug("Zoning op: %s", zone_op)
-        if _initiator_target_map is not None:
-            try:
-                if zone_op == 1:
-                    self.zonemanager.add_connection(_initiator_target_map)
-                elif zone_op == 0:
-                    self.zonemanager.delete_connection(_initiator_target_map)
-            except exception.ZoneManagerException as e:
-                with excutils.save_and_reraise_exception():
-                    LOG.error(e)

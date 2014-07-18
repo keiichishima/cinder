@@ -59,6 +59,7 @@ def stub_snapshot_get(self, context, snapshot_id):
 class VolumeApiTest(test.TestCase):
     def setUp(self):
         super(VolumeApiTest, self).setUp()
+        self.addCleanup(fake_notifier.reset)
         self.ext_mgr = extensions.ExtensionManager()
         self.ext_mgr.extensions = {}
         fake_image.stub_out_image_service(self.stubs)
@@ -66,16 +67,11 @@ class VolumeApiTest(test.TestCase):
 
         self.flags(host='fake',
                    notification_driver=[fake_notifier.__name__])
-
         self.stubs.Set(db, 'volume_get_all', stubs.stub_volume_get_all)
         self.stubs.Set(volume_api.API, 'delete', stubs.stub_volume_delete)
         self.stubs.Set(db, 'service_get_all_by_topic',
                        stubs.stub_service_get_all_by_topic)
         self.maxDiff = None
-
-    def tearDown(self):
-        super(VolumeApiTest, self).tearDown()
-        fake_notifier.reset()
 
     def test_volume_create(self):
         self.stubs.Set(volume_api.API, 'get', stubs.stub_volume_get)
@@ -194,10 +190,10 @@ class VolumeApiTest(test.TestCase):
                "availability_zone": "nova",
                "imageRef": 'c905cedb-7281-47e4-8a62-f26bc5fc4c77'}
         ex = {'volume': {'attachments': [{'device': '/',
-                         'host_name': None,
-                         'id': '1',
-                         'server_id': 'fakeuuid',
-                         'volume_id': '1'}],
+                                          'host_name': None,
+                                          'id': '1',
+                                          'server_id': 'fakeuuid',
+                                          'volume_id': '1'}],
                          'availability_zone': 'nova',
                          'bootable': 'false',
                          'created_at': datetime.datetime(1, 1, 1, 1, 1, 1),
@@ -929,7 +925,7 @@ class VolumeApiTest(test.TestCase):
             volumes_links = res_dict['volumes_links']
             _verify_links(volumes_links, key)
 
-        # Number of volumes less then max, do not include
+        # Number of volumes less than max, do not include
         def stub_volume_get_all2(context, marker, limit,
                                  sort_key, sort_dir,
                                  filters=None,
@@ -947,7 +943,7 @@ class VolumeApiTest(test.TestCase):
             self.assertEqual(len(res_dict['volumes']), 100)
             self.assertFalse('volumes_links' in res_dict)
 
-        # Number of volumes more then the max, include next link
+        # Number of volumes more than the max, include next link
         def stub_volume_get_all3(context, marker, limit,
                                  sort_key, sort_dir,
                                  filters=None,
@@ -965,7 +961,7 @@ class VolumeApiTest(test.TestCase):
             self.assertEqual(len(res_dict['volumes']), CONF.osapi_max_limit)
             volumes_links = res_dict['volumes_links']
             _verify_links(volumes_links, key)
-        # Pass a limit that is greater then the max and the total number of
+        # Pass a limit that is greater than the max and the total number of
         # volumes, ensure only the maximum is returned and that the next
         # link is present
         for key, fn in zip(api_keys, fns):
