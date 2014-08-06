@@ -101,6 +101,12 @@ storwize_svc_opts = [
     cfg.BoolOpt('storwize_svc_multihostmap_enabled',
                 default=True,
                 help='Allows vdisk to multi host mapping'),
+    cfg.BoolOpt('storwize_svc_npiv_compatibility_mode',
+                default=False,
+                help='Indicate whether svc driver is compatible for NPIV '
+                     'setup. If it is compatible, it will allow no wwpns '
+                     'being returned on get_conn_fc_wwpns during '
+                     'initialize_connection'),
 ]
 
 CONF = cfg.CONF
@@ -410,12 +416,25 @@ class StorwizeSVCDriver(san.SanDriver):
             else:
                 type_str = 'fibre_channel'
                 conn_wwpns = self._helpers.get_conn_fc_wwpns(host_name)
+
+                # If conn_wwpns is empty, then that means that there were
+                # no target ports with visibility to any of the initiators.
+                # We will either fail the attach, or return all target
+                # ports, depending on the value of the
+                # storwize_svc_npiv_compatibity_mode flag.
                 if len(conn_wwpns) == 0:
-                    msg = (_('Could not get FC connection information for the '
-                             'host-volume connection. Is the host configured '
-                             'properly for FC connections?'))
-                    LOG.error(msg)
-                    raise exception.VolumeBackendAPIException(data=msg)
+                    npiv_compat = self.configuration.\
+                        storwize_svc_npiv_compatibility_mode
+                    if not npiv_compat:
+                        msg = (_('Could not get FC connection information for '
+                                 'the host-volume connection. Is the host '
+                                 'configured properly for FC connections?'))
+                        LOG.error(msg)
+                        raise exception.VolumeBackendAPIException(data=msg)
+                    else:
+                        for node in self._state['storage_nodes'].itervalues():
+                            conn_wwpns.extend(node['WWPN'])
+
                 if not vol_opts['multipath']:
                     # preferred_node_entry can have a list of WWPNs while only
                     # one WWPN may be available on the storage host.  Here we
@@ -556,7 +575,7 @@ class StorwizeSVCDriver(san.SanDriver):
             msg = (_('create_volume_from_snapshot: Source and destination '
                      'size differ.'))
             LOG.error(msg)
-            raise exception.VolumeDriverException(message=msg)
+            raise exception.InvalidInput(message=msg)
 
         opts = self._get_vdisk_params(volume['volume_type_id'])
         self._helpers.create_copy(snapshot['name'], volume['name'],
@@ -568,7 +587,7 @@ class StorwizeSVCDriver(san.SanDriver):
             msg = (_('create_cloned_volume: Source and destination '
                      'size differ.'))
             LOG.error(msg)
-            raise exception.VolumeDriverException(message=msg)
+            raise exception.InvalidInput(message=msg)
 
         opts = self._get_vdisk_params(tgt_volume['volume_type_id'])
         self._helpers.create_copy(src_volume['name'], tgt_volume['name'],
@@ -822,18 +841,19 @@ class StorwizeSVCDriver(san.SanDriver):
         if we got here then we have a vdisk that isn't in use (or we don't
         care if it is in use.
         """
-        vdisk = self._helpers.vdisk_by_uid(ref['vdisk_UID'])
+        vdisk = self._helpers.vdisk_by_uid(ref['source-id'])
         if vdisk is None:
-            reason = _('No vdisk with the specified vdisk_UID.')
+            reason = (_('No vdisk with the UID specified by source-id %s.')
+                      % ref['source-id'])
             raise exception.ManageExistingInvalidReference(existing_ref=ref,
                                                            reason=reason)
         self._helpers.rename_vdisk(vdisk['name'], volume['name'])
 
     def manage_existing_get_size(self, volume, ref):
-        """Return size of an existing LV for manage_existing.
+        """Return size of an existing Vdisk for manage_existing.
 
         existing_ref is a dictionary of the form:
-        {'vdisk_UID': <uid of disk>}
+        {'source-id': <uid of disk>}
 
         Optional elements are:
           'manage_if_in_use':  True/False (default is False)
@@ -842,15 +862,16 @@ class StorwizeSVCDriver(san.SanDriver):
         """
 
         # Check that the reference is valid
-        if 'vdisk_UID' not in ref:
-            reason = _('Reference must contain vdisk_UID element.')
+        if 'source-id' not in ref:
+            reason = _('Reference must contain source-id element.')
             raise exception.ManageExistingInvalidReference(existing_ref=ref,
                                                            reason=reason)
 
         # Check for existence of the vdisk
-        vdisk = self._helpers.vdisk_by_uid(ref['vdisk_UID'])
+        vdisk = self._helpers.vdisk_by_uid(ref['source-id'])
         if vdisk is None:
-            reason = _('No vdisk with the specified vdisk_UID.')
+            reason = (_('No vdisk with the UID specified by source-id %s.')
+                      % (ref['source-id']))
             raise exception.ManageExistingInvalidReference(existing_ref=ref,
                                                            reason=reason)
 

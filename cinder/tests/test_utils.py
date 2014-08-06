@@ -31,6 +31,7 @@ from cinder.brick.initiator import linuxfc
 from cinder import exception
 from cinder.openstack.common import processutils as putils
 from cinder.openstack.common import timeutils
+from cinder import ssh_utils
 from cinder import test
 from cinder import utils
 
@@ -391,14 +392,6 @@ class GenericUtilsTestCase(test.TestCase):
         mock_reload.assert_called_once_with(fake_data)
         mock_open.assert_called_once_with(fake_file)
 
-    def test_generate_password(self):
-        password = utils.generate_password()
-        self.assertTrue([c for c in password if c in '0123456789'])
-        self.assertTrue([c for c in password
-                         if c in 'abcdefghijklmnopqrstuvwxyz'])
-        self.assertTrue([c for c in password
-                         if c in 'ABCDEFGHIJKLMNOPQRSTUVWXYZ'])
-
     def test_read_file_as_root(self):
         def fake_execute(*args, **kwargs):
             if args[1] == 'bad':
@@ -584,18 +577,17 @@ class GenericUtilsTestCase(test.TestCase):
         mock_stat.return_value = stat_result
         dev = utils.get_blkdev_major_minor(test_device)
         self.assertEqual('253:7', dev)
-        mock_stat.aseert_called_once_with(test_device)
+        mock_stat.assert_called_once_with(test_device)
 
     @mock.patch('os.stat')
     @mock.patch.object(utils, 'execute')
-    def test_get_blkdev_major_minor_file(self, mock_exec, mock_stat):
-
+    def _test_get_blkdev_major_minor_file(self, test_partition,
+                                          mock_exec, mock_stat):
         mock_exec.return_value = (
-            'Filesystem Size Used Avail Use% Mounted on\n'
-            '/dev/made_up_disk1 4096 2048 2048 50% /tmp\n', None)
+            'Filesystem Size Used Avail Use%% Mounted on\n'
+            '%s 4096 2048 2048 50%% /tmp\n' % test_partition, None)
 
         test_file = '/tmp/file'
-        test_partition = '/dev/made_up_disk1'
         test_disk = '/dev/made_up_disk'
 
         class stat_result_file:
@@ -620,11 +612,20 @@ class GenericUtilsTestCase(test.TestCase):
         mock_stat.side_effect = fake_stat
 
         dev = utils.get_blkdev_major_minor(test_file)
+        mock_stat.assert_any_call(test_file)
+        mock_exec.assert_called_once_with('df', test_file)
+        if test_partition.startswith('/'):
+            mock_stat.assert_any_call(test_partition)
+            mock_stat.assert_any_call(test_disk)
+        return dev
+
+    def test_get_blkdev_major_minor_file(self):
+        dev = self._test_get_blkdev_major_minor_file('/dev/made_up_disk1')
         self.assertEqual('8:64', dev)
-        mock_exec.aseert_called_once_with(test_file)
-        mock_stat.aseert_called_once_with(test_file)
-        mock_stat.aseert_called_once_with(test_partition)
-        mock_stat.aseert_called_once_with(test_disk)
+
+    def test_get_blkdev_major_minor_file_nfs(self):
+        dev = self._test_get_blkdev_major_minor_file('nfs-server:/export/path')
+        self.assertIsNone(dev)
 
 
 class MonkeyPatchTestCase(test.TestCase):
@@ -870,24 +871,24 @@ class SSHPoolTestCase(test.TestCase):
         mock_sshclient.return_value = FakeSSHClient()
 
         # create with customized setting
-        sshpool = utils.SSHPool("127.0.0.1", 22, 10,
-                                "test",
-                                password="test",
-                                min_size=1,
-                                max_size=1,
-                                missing_key_policy=paramiko.RejectPolicy(),
-                                hosts_key_file='dummy_host_keyfile')
+        sshpool = ssh_utils.SSHPool("127.0.0.1", 22, 10,
+                                    "test",
+                                    password="test",
+                                    min_size=1,
+                                    max_size=1,
+                                    missing_key_policy=paramiko.RejectPolicy(),
+                                    hosts_key_file='dummy_host_keyfile')
         with sshpool.item() as ssh:
             self.assertTrue(isinstance(ssh.get_policy(),
                                        paramiko.RejectPolicy))
             self.assertEqual(ssh.hosts_key_file, 'dummy_host_keyfile')
 
         # create with default setting
-        sshpool = utils.SSHPool("127.0.0.1", 22, 10,
-                                "test",
-                                password="test",
-                                min_size=1,
-                                max_size=1)
+        sshpool = ssh_utils.SSHPool("127.0.0.1", 22, 10,
+                                    "test",
+                                    password="test",
+                                    min_size=1,
+                                    max_size=1)
         with sshpool.item() as ssh:
             self.assertTrue(isinstance(ssh.get_policy(),
                                        paramiko.AutoAddPolicy))
@@ -899,11 +900,11 @@ class SSHPoolTestCase(test.TestCase):
         mock_sshclient.return_value = FakeSSHClient()
 
         # create with password
-        sshpool = utils.SSHPool("127.0.0.1", 22, 10,
-                                "test",
-                                password="test",
-                                min_size=1,
-                                max_size=1)
+        sshpool = ssh_utils.SSHPool("127.0.0.1", 22, 10,
+                                    "test",
+                                    password="test",
+                                    min_size=1,
+                                    max_size=1)
         with sshpool.item() as ssh:
             first_id = ssh.id
 
@@ -914,16 +915,16 @@ class SSHPoolTestCase(test.TestCase):
         mock_sshclient.connect.assert_called_once()
 
         # create with private key
-        sshpool = utils.SSHPool("127.0.0.1", 22, 10,
-                                "test",
-                                privatekey="test",
-                                min_size=1,
-                                max_size=1)
+        sshpool = ssh_utils.SSHPool("127.0.0.1", 22, 10,
+                                    "test",
+                                    privatekey="test",
+                                    min_size=1,
+                                    max_size=1)
         mock_sshclient.connect.assert_called_once()
 
         # attempt to create with no password or private key
         self.assertRaises(paramiko.SSHException,
-                          utils.SSHPool,
+                          ssh_utils.SSHPool,
                           "127.0.0.1", 22, 10,
                           "test",
                           min_size=1,
@@ -932,11 +933,11 @@ class SSHPoolTestCase(test.TestCase):
     @mock.patch('paramiko.SSHClient')
     def test_closed_reopend_ssh_connections(self, mock_sshclient):
         mock_sshclient.return_value = eval('FakeSSHClient')()
-        sshpool = utils.SSHPool("127.0.0.1", 22, 10,
-                                "test",
-                                password="test",
-                                min_size=1,
-                                max_size=4)
+        sshpool = ssh_utils.SSHPool("127.0.0.1", 22, 10,
+                                    "test",
+                                    password="test",
+                                    min_size=1,
+                                    max_size=4)
         with sshpool.item() as ssh:
             mock_sshclient.reset_mock()
             first_id = ssh.id

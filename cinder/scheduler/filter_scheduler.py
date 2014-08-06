@@ -66,7 +66,7 @@ class FilterScheduler(driver.Scheduler):
                                       filter_properties)
 
         if not weighed_host:
-            raise exception.NoValidHost(reason="")
+            raise exception.NoValidHost(reason="No weighed hosts available")
 
         host = weighed_host.obj.host
         volume_id = request_spec['volume_id']
@@ -100,9 +100,10 @@ class FilterScheduler(driver.Scheduler):
                % {'id': request_spec['volume_id'], 'host': host})
         raise exception.NoValidHost(reason=msg)
 
-    def find_retype_host(self, context, request_spec, filter_properties={},
+    def find_retype_host(self, context, request_spec, filter_properties=None,
                          migration_policy='never'):
         """Find a host that can accept the volume with its new type."""
+        filter_properties = filter_properties or {}
         current_host = request_spec['volume_properties']['host']
 
         # The volume already exists on this host, and so we shouldn't check if
@@ -268,6 +269,9 @@ class FilterScheduler(driver.Scheduler):
         weighed_hosts = self._get_weighted_candidates(context, request_spec,
                                                       filter_properties)
         if not weighed_hosts:
+            LOG.warning(_('No weighed hosts found for volume '
+                          'with properties: %s'),
+                        filter_properties['request_spec']['volume_type'])
             return None
         return self._choose_top_host(weighed_hosts, request_spec)
 

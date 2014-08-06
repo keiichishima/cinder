@@ -24,6 +24,7 @@ import mock
 import os
 import shutil
 import socket
+from sys import platform
 import tempfile
 
 import eventlet
@@ -43,6 +44,7 @@ from cinder import keymgr
 from cinder.openstack.common import fileutils
 from cinder.openstack.common import importutils
 from cinder.openstack.common import jsonutils
+from cinder.openstack.common import log as logging
 from cinder.openstack.common import timeutils
 from cinder.openstack.common import units
 import cinder.policy
@@ -71,7 +73,7 @@ QUOTAS = quota.QUOTAS
 CONF = cfg.CONF
 
 ENCRYPTION_PROVIDER = 'nova.volume.encryptors.cryptsetup.CryptsetupEncryptor'
-
+PLATFORM = platform
 fake_opt = [
     cfg.StrOpt('fake_opt', default='fake', help='fake opts')
 ]
@@ -343,6 +345,7 @@ class VolumeTestCase(BaseVolumeTestCase):
         self.assertEqual(msg['event_type'], 'volume.create.start')
         expected = {
             'status': 'creating',
+            'host': socket.gethostname(),
             'display_name': 'test_volume',
             'availability_zone': 'nova',
             'tenant_id': 'fake',
@@ -1936,6 +1939,7 @@ class VolumeTestCase(BaseVolumeTestCase):
         self.volume.delete_snapshot(self.context, snapshot_id)
         self.volume.delete_volume(self.context, volume_id)
 
+    @test.testtools.skipIf(platform == "darwin", "SKIP on OSX")
     def test_delete_no_dev_fails(self):
         """Test delete snapshot with no dev file fails."""
         self.stubs.Set(os.path, 'exists', lambda x: False)
@@ -2552,6 +2556,9 @@ class VolumeTestCase(BaseVolumeTestCase):
                        lambda x, y, z, remote='dest': True)
         self.stubs.Set(volume_rpcapi.VolumeAPI, 'delete_volume',
                        fake_delete_volume_rpc)
+        error_logs = []
+        LOG = logging.getLogger('cinder.volume.manager')
+        self.stubs.Set(LOG, 'error', lambda x: error_logs.append(x))
 
         volume = tests_utils.create_volume(self.context, size=0,
                                            host=CONF.host)
@@ -2561,6 +2568,61 @@ class VolumeTestCase(BaseVolumeTestCase):
         volume = db.volume_get(context.get_admin_context(), volume['id'])
         self.assertEqual(volume['host'], 'newhost')
         self.assertIsNone(volume['migration_status'])
+        self.assertEqual(volume['status'], 'available')
+        self.assertEqual(error_logs, [])
+
+    def _test_migrate_volume_completion(self, status='available',
+                                        instance_uuid=None, attached_host=None,
+                                        retyping=False):
+        elevated = context.get_admin_context()
+        initial_status = retyping and 'retyping' or status
+        old_volume = tests_utils.create_volume(self.context, size=0,
+                                               host=CONF.host,
+                                               status=initial_status,
+                                               migration_status='migrating',
+                                               instance_uuid=instance_uuid,
+                                               attached_host=attached_host)
+        target_status = 'target:%s' % old_volume['id']
+        new_volume = tests_utils.create_volume(self.context, size=0,
+                                               host=CONF.host,
+                                               migration_status=target_status)
+
+        self.stubs.Set(volume_rpcapi.VolumeAPI, 'delete_volume',
+                       lambda x: None)
+        self.stubs.Set(volume_rpcapi.VolumeAPI, 'attach_volume',
+                       lambda *args: self.volume.attach_volume(args[1],
+                                                               args[2]['id'],
+                                                               *args[3:]))
+        self.stubs.Set(self.volume.driver, 'attach_volume',
+                       lambda *args, **kwargs: None)
+
+        self.volume.migrate_volume_completion(self.context,
+                                              old_volume['id'],
+                                              new_volume['id'])
+
+        volume = db.volume_get(elevated, old_volume['id'])
+        self.assertEqual(volume['status'], status)
+        self.assertEqual(volume['attached_host'], attached_host)
+        self.assertEqual(volume['instance_uuid'], instance_uuid)
+
+    def test_migrate_volume_completion_retype_available(self):
+        self._test_migrate_volume_completion('available', retyping=True)
+
+    def test_migrate_volume_completion_retype_in_use(self):
+        self._test_migrate_volume_completion(
+            'in-use',
+            '83c969d5-065e-4c9c-907d-5394bc2e98e2',
+            'some-host',
+            retyping=True)
+
+    def test_migrate_volume_completion_migrate_available(self):
+        self._test_migrate_volume_completion()
+
+    def test_migrate_volume_completion_migrate_in_use(self):
+        self._test_migrate_volume_completion(
+            'in-use',
+            '83c969d5-065e-4c9c-907d-5394bc2e98e2',
+            'some-host')
 
     def test_retype_setup_fail_volume_is_available(self):
         """Verify volume is still available if retype prepare failed."""
@@ -3282,11 +3344,11 @@ class LVMISCSIVolumeDriverTestCase(DriverTestCase):
         """
         self._setup_stubs_for_manage_existing()
 
-        ref = {'lv_name': 'fake_lv'}
+        ref = {'source-name': 'fake_lv'}
         vol = {'name': 'test', 'id': 1, 'size': 0}
 
         def _rename_volume(old_name, new_name):
-            self.assertEqual(old_name, ref['lv_name'])
+            self.assertEqual(old_name, ref['source-name'])
             self.assertEqual(new_name, vol['name'])
 
         self.stubs.Set(self.volume.driver.vg, 'rename_volume',
@@ -3306,7 +3368,7 @@ class LVMISCSIVolumeDriverTestCase(DriverTestCase):
         """
         self._setup_stubs_for_manage_existing()
 
-        ref = {'lv_name': 'fake_lv_bad_size'}
+        ref = {'source-name': 'fake_lv_bad_size'}
         vol = {'name': 'test', 'id': 1, 'size': 2}
 
         self.assertRaises(exception.VolumeBackendAPIException,
@@ -3321,7 +3383,7 @@ class LVMISCSIVolumeDriverTestCase(DriverTestCase):
         """
         self._setup_stubs_for_manage_existing()
 
-        ref = {'lv_name': 'fake_nonexistent_lv'}
+        ref = {'source-name': 'fake_nonexistent_lv'}
         vol = {'name': 'test', 'id': 1, 'size': 0, 'status': 'available'}
 
         self.assertRaises(exception.ManageExistingInvalidReference,

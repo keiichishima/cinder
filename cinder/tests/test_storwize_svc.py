@@ -1712,7 +1712,7 @@ class StorwizeSVCDriverTestCase(test.TestCase):
 
         # Try to create where source size != target size
         vol2['size'] += 1
-        self.assertRaises(exception.VolumeDriverException,
+        self.assertRaises(exception.InvalidInput,
                           self.driver.create_volume_from_snapshot,
                           vol2, snap1)
         self._assert_vol_exists(vol2['name'], False)
@@ -1726,7 +1726,7 @@ class StorwizeSVCDriverTestCase(test.TestCase):
 
         # Try to clone where source size != target size
         vol3['size'] += 1
-        self.assertRaises(exception.VolumeDriverException,
+        self.assertRaises(exception.InvalidInput,
                           self.driver.create_cloned_volume,
                           vol3, vol2)
         self._assert_vol_exists(vol3['name'], False)
@@ -1979,7 +1979,35 @@ class StorwizeSVCDriverTestCase(test.TestCase):
                                       self.driver.initialize_connection,
                                       volume2, self._connector)
 
+                # with storwize_svc_npiv_compatibility_mode set to True,
+                # lsfabric can return [] and initilize_connection will still
+                # complete successfully
+
+                with mock.patch.object(helpers.StorwizeHelpers,
+                                       'get_conn_fc_wwpns') as conn_fc_wwpns:
+                    conn_fc_wwpns.return_value = []
+                    self._set_flag('storwize_svc_npiv_compatibility_mode',
+                                   True)
+                    expected_fc_npiv = {
+                        'driver_volume_type': 'fibre_channel',
+                        'data': {'target_lun': 1,
+                                 'target_wwn': '500507680220C744',
+                                 'target_discovered': False}}
+                    ret = self.driver.initialize_connection(volume2,
+                                                            self._connector)
+                    self.assertEqual(
+                        ret['driver_volume_type'],
+                        expected_fc_npiv['driver_volume_type'])
+                    for k, v in expected_fc_npiv['data'].iteritems():
+                        self.assertEqual(ret['data'][k], v)
+                    self._set_flag('storwize_svc_npiv_compatibility_mode',
+                                   False)
+
             self.driver.terminate_connection(volume1, self._connector)
+            # for npiv compatibility test case, we need to terminate connection
+            # to the 2nd volume
+            if protocol == 'FC' and self.USESIM:
+                self.driver.terminate_connection(volume2, self._connector)
             if self.USESIM:
                 ret = self.driver._helpers.get_host_from_connector(
                     self._connector)
@@ -2394,6 +2422,19 @@ class StorwizeSVCDriverTestCase(test.TestCase):
             self.driver.delete_volume(volume)
             self.assertNotIn(volume['id'], self.driver._vdiskcopyops)
 
+    def test_storwize_get_host_with_fc_connection(self):
+        # Create a FC host
+        del self._connector['initiator']
+        helper = self.driver._helpers
+        host_name = helper.create_host(self._connector)
+
+        # Remove the first wwpn from connector, and then try get host
+        wwpns = self._connector['wwpns']
+        wwpns.remove(wwpns[0])
+        host_name = helper.get_host_from_connector(self._connector)
+
+        self.assertIsNotNone(host_name)
+
     def test_storwize_initiator_multiple_preferred_nodes_matching(self):
 
         # Generate us a test volume
@@ -2565,6 +2606,64 @@ class StorwizeSVCDriverTestCase(test.TestCase):
 
         self.assertEqual(term_data, term_ret)
 
+    def test_storwize_initiator_target_map_npiv(self):
+        # Create two volumes to be used in mappings
+        ctxt = context.get_admin_context()
+        self._set_flag('storwize_svc_npiv_compatibility_mode', True)
+
+        # Generate us a test volume
+        volume = self._generate_vol_info(None, None)
+        self.driver.create_volume(volume)
+
+        # FIbre Channel volume type
+        vol_type = volume_types.create(ctxt, 'FC', {'protocol': 'FC'})
+
+        volume['volume_type_id'] = vol_type['id']
+
+        # Make sure that the volumes have been created
+        self._assert_vol_exists(volume['name'], True)
+
+        wwpns = ['ff00000000000000', 'ff00000000000001']
+        connector = {'host': 'storwize-svc-test', 'wwpns': wwpns}
+
+        # Initialise the connection
+        with mock.patch.object(helpers.StorwizeHelpers,
+                               'get_conn_fc_wwpns') as conn_fc_wwpns:
+            conn_fc_wwpns.return_value = []
+            init_ret = self.driver.initialize_connection(volume, connector)
+
+        # Check that the initiator_target_map is as expected
+        init_data = {'driver_volume_type': 'fibre_channel',
+                     'data': {'initiator_target_map':
+                              {'ff00000000000000': ['500507680220C744',
+                                                    '500507680210C744',
+                                                    '500507680220C745',
+                                                    '500507680230C745'],
+                               'ff00000000000001': ['500507680220C744',
+                                                    '500507680210C744',
+                                                    '500507680220C745',
+                                                    '500507680230C745']},
+                              'target_discovered': False,
+                              'target_lun': 0,
+                              'target_wwn': '500507680220C744',
+                              'volume_id': volume['id']
+                              }
+                     }
+
+        self.assertEqual(init_data, init_ret)
+
+        # Terminate connection
+        term_ret = self.driver.terminate_connection(volume, connector)
+        # Check that the initiator_target_map is as expected
+        term_data = {'driver_volume_type': 'fibre_channel',
+                     'data': {'initiator_target_map':
+                              {'ff00000000000000': ['AABBCCDDEEFF0011'],
+                               'ff00000000000001': ['AABBCCDDEEFF0011']}
+                              }
+                     }
+
+        self.assertEqual(term_data, term_ret)
+
     def _get_vdisk_uid(self, vdisk_name):
         """Return vdisk_UID for given vdisk.
 
@@ -2610,7 +2709,7 @@ class StorwizeSVCDriverTestCase(test.TestCase):
     def test_manage_existing_bad_uid(self):
         """Error when the specified UUID does not exist."""
         volume = self._generate_vol_info(None, None)
-        ref = {'vdisk_UID': 'bad_uid'}
+        ref = {'source-id': 'bad_uid'}
         self.assertRaises(exception.ManageExistingInvalidReference,
                           self.driver.manage_existing_get_size, volume, ref)
         pass
@@ -2629,11 +2728,11 @@ class StorwizeSVCDriverTestCase(test.TestCase):
         volume, uid = self._create_volume_and_return_uid('manage_test')
 
         # Descriptor of the Cinder volume that we want to own the vdisk
-        # refrerenced by uid.
+        # referenced by uid.
         new_volume = self._generate_vol_info(None, None)
 
         # Submit the request to manage it.
-        ref = {'vdisk_UID': uid}
+        ref = {'source-id': uid}
         size = self.driver.manage_existing_get_size(new_volume, ref)
         self.assertEqual(size, 10)
         self.driver.manage_existing(new_volume, ref)
@@ -2661,9 +2760,9 @@ class StorwizeSVCDriverTestCase(test.TestCase):
         self.driver.initialize_connection(volume, conn)
 
         # Descriptor of the Cinder volume that we want to own the vdisk
-        # refrerenced by uid.
+        # referenced by uid.
         volume = self._generate_vol_info(None, None)
-        ref = {'vdisk_UID': uid}
+        ref = {'source-id': uid}
 
         # Attempt to manage this disk, and except an exception beause the
         # volume is already mapped.
@@ -2674,7 +2773,7 @@ class StorwizeSVCDriverTestCase(test.TestCase):
         """Tests managing a mapped volume with override.
 
         This test case attempts to manage an existing volume by UID, when it
-        it already mapped to a host, but the ref specifies that this is OK.
+        already mapped to a host, but the ref specifies that this is OK.
         We verify that the backend volume was renamed to have the name of the
         Cinder volume that we asked for it to be associated with.
         """
@@ -2689,12 +2788,12 @@ class StorwizeSVCDriverTestCase(test.TestCase):
         self.driver.initialize_connection(volume, conn)
 
         # Descriptor of the Cinder volume that we want to own the vdisk
-        # refrerenced by uid.
+        # referenced by uid.
         new_volume = self._generate_vol_info(None, None)
 
         # Submit the request to manage it, specifying that it is OK to
         # manage a volume that is already attached.
-        ref = {'vdisk_UID': uid, 'manage_if_in_use': True}
+        ref = {'source-id': uid, 'manage_if_in_use': True}
         size = self.driver.manage_existing_get_size(new_volume, ref)
         self.assertEqual(size, 10)
         self.driver.manage_existing(new_volume, ref)

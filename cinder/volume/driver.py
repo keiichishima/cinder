@@ -113,6 +113,12 @@ volume_opts = [
                default=0,
                help='The upper limit of bandwidth of volume copy. '
                     '0 => unlimited'),
+    cfg.StrOpt('iscsi_write_cache',
+               default='on',
+               help='Sets the behavior of the iSCSI target to either '
+                    'perform write-back(on) or write-through(off). '
+                    'This parameter is valid if iscsi_helper is set '
+                    'to tgtadm or iseradm.'),
 ]
 
 # for backward compatibility
@@ -179,7 +185,7 @@ class VolumeDriver(object):
 
         if self.configuration:
             self.configuration.append_config_values(volume_opts)
-
+            self.configuration.append_config_values(iser_opts)
         self.set_execute(execute)
         self._stats = {}
 
@@ -753,8 +759,9 @@ class ISCSIDriver(VolumeDriver):
         except (IndexError, ValueError):
             if (self.configuration.volume_driver in
                     ['cinder.volume.drivers.lvm.LVMISCSIDriver',
+                     'cinder.volume.drivers.lvm.LVMISERDriver',
                      'cinder.volume.drivers.lvm.ThinLVMVolumeDriver'] and
-                    self.configuration.iscsi_helper == 'tgtadm'):
+                    self.configuration.iscsi_helper in ('tgtadm', 'iseradm')):
                 properties['target_lun'] = 1
             else:
                 properties['target_lun'] = 0

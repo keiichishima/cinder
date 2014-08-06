@@ -20,8 +20,8 @@ from cinder import exception
 from cinder.openstack.common.gettextutils import _
 from cinder.openstack.common import log as logging
 from cinder.openstack.common import units
-from cinder import utils
 from cinder.volume.driver import ISCSIDriver
+from cinder.volume import utils
 from cinder.volume import volume_types
 from oslo.config import cfg
 
@@ -32,7 +32,7 @@ try:
     from hplefthandclient import client
     from hplefthandclient import exceptions as hpexceptions
 except ImportError:
-    LOG.error(_('Module hplefthandclient not installed.'))
+    import cinder.tests.fake_hp_lefthand_client as hplefthandclient
 
 hplefthand_opts = [
     cfg.StrOpt('hplefthand_api_url',
