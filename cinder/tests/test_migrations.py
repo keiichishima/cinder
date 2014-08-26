@@ -165,7 +165,7 @@ class TestMigrations(test.TestCase):
         def execute_cmd(cmd=None):
             proc = subprocess.Popen(cmd, stdout=subprocess.PIPE,
                                     stderr=subprocess.STDOUT, shell=True)
-            output = proc.communicate()[0]
+            proc.communicate()[0]
             self.assertEqual(0, proc.returncode)
 
         for key, engine in self.engines.items():
@@ -1075,7 +1075,7 @@ class TestMigrations(test.TestCase):
             reservations = sqlalchemy.Table('reservations',
                                             metadata,
                                             autoload=True)
-            index_colums = []
+            index_columns = []
             for idx in reservations.indexes:
                 if idx.name == 'reservations_deleted_expire_idx':
                     index_columns = idx.columns.keys()
@@ -1093,3 +1093,36 @@ class TestMigrations(test.TestCase):
                                             autoload=True)
             index_names = [idx.name for idx in reservations.indexes]
             self.assertNotIn('reservations_deleted_expire_idx', index_names)
+
+    def test_migration_024(self):
+        """Test adding replication columns to volume table."""
+        for (key, engine) in self.engines.items():
+            migration_api.version_control(engine,
+                                          TestMigrations.REPOSITORY,
+                                          migration.db_initial_version())
+            migration_api.upgrade(engine, TestMigrations.REPOSITORY, 23)
+            metadata = sqlalchemy.schema.MetaData()
+            metadata.bind = engine
+
+            migration_api.upgrade(engine, TestMigrations.REPOSITORY, 24)
+
+            volumes = sqlalchemy.Table('volumes',
+                                       metadata,
+                                       autoload=True)
+            self.assertIsInstance(volumes.c.replication_status.type,
+                                  sqlalchemy.types.VARCHAR)
+            self.assertIsInstance(volumes.c.replication_extended_status.type,
+                                  sqlalchemy.types.VARCHAR)
+            self.assertIsInstance(volumes.c.replication_driver_data.type,
+                                  sqlalchemy.types.VARCHAR)
+
+            migration_api.downgrade(engine, TestMigrations.REPOSITORY, 23)
+            metadata = sqlalchemy.schema.MetaData()
+            metadata.bind = engine
+
+            volumes = sqlalchemy.Table('volumes',
+                                       metadata,
+                                       autoload=True)
+            self.assertNotIn('replication_status', volumes.c)
+            self.assertNotIn('replication_extended_status', volumes.c)
+            self.assertNotIn('replication_driver_data', volumes.c)

@@ -53,8 +53,8 @@ from oslo.config import cfg
 from cinder import context
 from cinder import exception
 from cinder import flow_utils
+from cinder.i18n import _
 from cinder.openstack.common import excutils
-from cinder.openstack.common.gettextutils import _
 from cinder.openstack.common import log as logging
 from cinder.openstack.common import loopingcall
 from cinder.openstack.common import units
@@ -66,7 +66,7 @@ from taskflow.patterns import linear_flow
 
 LOG = logging.getLogger(__name__)
 
-MIN_CLIENT_VERSION = '3.0.0'
+MIN_CLIENT_VERSION = '3.1.0'
 
 hp3par_opts = [
     cfg.StrOpt('hp3par_api_url',
@@ -100,7 +100,10 @@ hp3par_opts = [
                 help="Enable HTTP debugging to 3PAR"),
     cfg.ListOpt('hp3par_iscsi_ips',
                 default=[],
-                help="List of target iSCSI addresses to use.")
+                help="List of target iSCSI addresses to use."),
+    cfg.BoolOpt('hp3par_iscsi_chap_enabled',
+                default=False,
+                help="Enable CHAP authentication for iSCSI connections."),
 ]
 
 
@@ -138,10 +141,14 @@ class HP3PARCommon(object):
         2.0.14 - Modified manage volume to use standard 'source-name' element.
         2.0.15 - Added support for volume retype
         2.0.16 - Add a better log during delete_volume time. Bug #1349636
+        2.0.17 - Added iSCSI CHAP support
+                 This update now requires 3.1.3 MU1 firmware
+                 and hp3parclient 3.1.0
+        2.0.18 - HP 3PAR manage_existing with volume-type support
 
     """
 
-    VERSION = "2.0.16"
+    VERSION = "2.0.18"
 
     stats = {}
 
@@ -287,8 +294,11 @@ class HP3PARCommon(object):
         {'source-name': <name of the virtual volume>}
         """
         # Check for the existence of the virtual volume.
+        old_comment_str = ""
         try:
             vol = self.client.getVolume(existing_ref['source-name'])
+            if 'comment' in vol:
+                old_comment_str = vol['comment']
         except hpexceptions.HTTPNotFound:
             err = (_("Virtual volume '%s' doesn't exist on array.") %
                    existing_ref['source-name'])
@@ -318,23 +328,14 @@ class HP3PARCommon(object):
         new_comment['name'] = name
         new_comment['type'] = 'OpenStack'
 
-        # Create new comments for the existing volume depending on
-        # whether the user's volume type choice.
-        # TODO(Anthony) when retype is available handle retyping of
-        # a volume.
-        if volume['volume_type']:
+        volume_type = None
+        if volume['volume_type_id']:
             try:
-                settings = self.get_volume_settings_from_type(volume)
+                volume_type = self._get_volume_type(volume['volume_type_id'])
             except Exception:
                 reason = (_("Volume type ID '%s' is invalid.") %
                           volume['volume_type_id'])
                 raise exception.ManageExistingVolumeTypeMismatch(reason=reason)
-
-            volume_type = self._get_volume_type(volume['volume_type_id'])
-
-            new_comment['volume_type_name'] = volume_type['name']
-            new_comment['volume_type_id'] = volume['volume_type_id']
-            new_comment['qos'] = settings['qos']
 
         # Update the existing volume with the new name and comments.
         self.client.modifyVolume(existing_ref['source-name'],
@@ -343,6 +344,28 @@ class HP3PARCommon(object):
 
         LOG.info(_("Virtual volume '%(ref)s' renamed to '%(new)s'.") %
                  {'ref': existing_ref['source-name'], 'new': new_vol_name})
+
+        if volume_type:
+            LOG.info(_("Virtual volume %(disp)s '%(new)s' is being retyped.") %
+                     {'disp': display_name, 'new': new_vol_name})
+
+            try:
+                self._retype_from_no_type(volume, volume_type)
+                LOG.info(_("Virtual volume %(disp)s successfully retyped to "
+                           "%(new_type)s.") %
+                         {'disp': display_name,
+                          'new_type': volume_type.get('name')})
+            except Exception:
+                with excutils.save_and_reraise_exception():
+                    LOG.warning(_("Failed to manage virtual volume %(disp)s "
+                                  "due to error during retype.") %
+                                {'disp': display_name})
+                    # Try to undo the rename and clear the new comment.
+                    self.client.modifyVolume(
+                        new_vol_name,
+                        {'newName': existing_ref['source-name'],
+                         'comment': old_comment_str})
+
         LOG.info(_("Virtual volume %(disp)s '%(new)s' is now being managed.") %
                  {'disp': display_name, 'new': new_vol_name})
 
@@ -406,16 +429,16 @@ class HP3PARCommon(object):
                 if (not _convert_to_base and
                     isinstance(ex, hpexceptions.HTTPForbidden) and
                         ex.get_code() == 150):
-                        # Error code 150 means 'invalid operation: Cannot grow
-                        # this type of volume'.
-                        # Suppress raising this exception because we can
-                        # resolve it by converting it into a base volume.
-                        # Afterwards, extending the volume should succeed, or
-                        # fail with a different exception/error code.
-                        ex_ctxt.reraise = False
-                        self._extend_volume(volume, volume_name,
-                                            growth_size_mib,
-                                            _convert_to_base=True)
+                    # Error code 150 means 'invalid operation: Cannot grow
+                    # this type of volume'.
+                    # Suppress raising this exception because we can
+                    # resolve it by converting it into a base volume.
+                    # Afterwards, extending the volume should succeed, or
+                    # fail with a different exception/error code.
+                    ex_ctxt.reraise = False
+                    self._extend_volume(volume, volume_name,
+                                        growth_size_mib,
+                                        _convert_to_base=True)
                 else:
                     LOG.error(_("Error extending volume: %(vol)s. "
                                 "Exception: %(ex)s") %
@@ -1604,17 +1627,19 @@ class HP3PARCommon(object):
         if new_persona:
             self.validate_persona(new_persona)
 
-        (host_type, host_id, host_cpg) = (
-            host['capabilities']['location_info']).split(':')
+        if host is not None:
+            (host_type, host_id, host_cpg) = (
+                host['capabilities']['location_info']).split(':')
 
-        if not (host_type == 'HP3PARDriver'):
-            reason = (_("Cannot retype from HP3PARDriver to %s.") % host_type)
-            raise exception.InvalidHost(reason)
+            if not (host_type == 'HP3PARDriver'):
+                reason = (_("Cannot retype from HP3PARDriver to %s.") %
+                          host_type)
+                raise exception.InvalidHost(reason)
 
-        sys_info = self.client.getStorageSystemInfo()
-        if not (host_id == sys_info['serialNumber']):
-            reason = (_("Cannot retype from one 3PAR array to another."))
-            raise exception.InvalidHost(reason)
+            sys_info = self.client.getStorageSystemInfo()
+            if not (host_id == sys_info['serialNumber']):
+                reason = (_("Cannot retype from one 3PAR array to another."))
+                raise exception.InvalidHost(reason)
 
         if not old_snap_cpg:
             reason = (_("Invalid current snapCPG name for retype.  The volume "
@@ -1672,27 +1697,23 @@ class HP3PARCommon(object):
                    'old_comment': old_comment
                    })
 
-    def retype(self, volume, new_type, diff, host):
-        """Convert the volume to be of the new type.
+    def _retype_from_old_to_new(self, volume, new_type, old_volume_settings,
+                                host):
+        """Convert the volume to be of the new type.  Given old type settings.
 
         Returns True if the retype was successful.
         Uses taskflow to revert changes if errors occur.
 
         :param volume: A dictionary describing the volume to retype
         :param new_type: A dictionary describing the volume type to convert to
-        :param diff: A dictionary with the difference between the two types
+        :param old_volume_settings: Volume settings describing the old type.
         :param host: A dictionary describing the host, where
                      host['host'] is its name, and host['capabilities'] is a
-                     dictionary of its reported capabilities.
+                     dictionary of its reported capabilities.  Host validation
+                     is just skipped if host is None.
         """
-        LOG.debug(("enter: retype: id=%(id)s, new_type=%(new_type)s,"
-                   "diff=%(diff)s, host=%(host)s") % {'id': volume['id'],
-                                                      'new_type': new_type,
-                                                      'diff': diff,
-                                                      'host': host})
         volume_id = volume['id']
         volume_name = self._get_3par_vol_name(volume_id)
-
         new_type_name = new_type['name']
         new_type_id = new_type['id']
         new_volume_settings = self.get_volume_settings_from_type_id(
@@ -1706,8 +1727,6 @@ class HP3PARCommon(object):
         new_hp3par_keys = new_volume_settings['hp3par_keys']
         if 'persona' in new_hp3par_keys:
             new_persona = new_hp3par_keys['persona']
-
-        old_volume_settings = self.get_volume_settings_from_type(volume)
         old_qos = old_volume_settings['qos']
         old_vvs = old_volume_settings['vvs_name']
 
@@ -1731,6 +1750,43 @@ class HP3PARCommon(object):
                      old_snap_cpg, new_snap_cpg, old_tpvv, new_tpvv,
                      old_vvs, new_vvs, old_qos, new_qos, old_comment)
         return True
+
+    def _retype_from_no_type(self, volume, new_type):
+        """Convert the volume to be of the new type.  Starting from no type.
+
+        Returns True if the retype was successful.
+        Uses taskflow to revert changes if errors occur.
+
+        :param volume: A dictionary describing the volume to retype. Except the
+                       volume-type is not used here. This method uses None.
+        :param new_type: A dictionary describing the volume type to convert to
+        """
+        none_type_settings = self.get_volume_settings_from_type_id(None)
+        return self._retype_from_old_to_new(volume, new_type,
+                                            none_type_settings, None)
+
+    def retype(self, volume, new_type, diff, host):
+        """Convert the volume to be of the new type.
+
+        Returns True if the retype was successful.
+        Uses taskflow to revert changes if errors occur.
+
+        :param volume: A dictionary describing the volume to retype
+        :param new_type: A dictionary describing the volume type to convert to
+        :param diff: A dictionary with the difference between the two types
+        :param host: A dictionary describing the host, where
+                     host['host'] is its name, and host['capabilities'] is a
+                     dictionary of its reported capabilities.  Host validation
+                     is just skipped if host is None.
+        """
+        LOG.debug(("enter: retype: id=%(id)s, new_type=%(new_type)s,"
+                   "diff=%(diff)s, host=%(host)s") % {'id': volume['id'],
+                                                      'new_type': new_type,
+                                                      'diff': diff,
+                                                      'host': host})
+        old_volume_settings = self.get_volume_settings_from_type(volume)
+        return self._retype_from_old_to_new(volume, new_type,
+                                            old_volume_settings, host)
 
     class TaskWaiter(object):
         """TaskWaiter waits for task to be not active and returns status."""

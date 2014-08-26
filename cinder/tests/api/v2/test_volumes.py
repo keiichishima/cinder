@@ -98,12 +98,13 @@ class VolumeApiTest(test.TestCase):
                          'description': 'Volume Test Desc',
                          'id': '1',
                          'links':
-                         [{'href': 'http://localhost/v2/fake/volumes/1',
+                         [{'href': 'http://localhost/v2/fakeproject/volumes/1',
                            'rel': 'self'},
-                          {'href': 'http://localhost/fake/volumes/1',
+                          {'href': 'http://localhost/fakeproject/volumes/1',
                            'rel': 'bookmark'}],
                          'metadata': {},
                          'name': 'Volume Test Name',
+                         'replication_status': 'disabled',
                          'size': 100,
                          'snapshot_id': None,
                          'source_volid': None,
@@ -201,12 +202,13 @@ class VolumeApiTest(test.TestCase):
                          'encrypted': False,
                          'id': '1',
                          'links':
-                         [{'href': 'http://localhost/v2/fake/volumes/1',
+                         [{'href': 'http://localhost/v2/fakeproject/volumes/1',
                            'rel': 'self'},
-                          {'href': 'http://localhost/fake/volumes/1',
+                          {'href': 'http://localhost/fakeproject/volumes/1',
                            'rel': 'bookmark'}],
                          'metadata': {},
                          'name': 'Volume Test Name',
+                         'replication_status': 'disabled',
                          'size': '1',
                          'snapshot_id': None,
                          'source_volid': None,
@@ -286,6 +288,7 @@ class VolumeApiTest(test.TestCase):
                 'availability_zone': 'fakeaz',
                 'bootable': 'false',
                 'name': 'Updated Test Name',
+                'replication_status': 'disabled',
                 'attachments': [
                     {
                         'id': '1',
@@ -305,11 +308,11 @@ class VolumeApiTest(test.TestCase):
                 'size': 1,
                 'links': [
                     {
-                        'href': 'http://localhost/v2/fake/volumes/1',
+                        'href': 'http://localhost/v2/fakeproject/volumes/1',
                         'rel': 'self'
                     },
                     {
-                        'href': 'http://localhost/fake/volumes/1',
+                        'href': 'http://localhost/fakeproject/volumes/1',
                         'rel': 'bookmark'
                     }
                 ],
@@ -338,6 +341,7 @@ class VolumeApiTest(test.TestCase):
                 'availability_zone': 'fakeaz',
                 'bootable': 'false',
                 'name': 'Updated Test Name',
+                'replication_status': 'disabled',
                 'attachments': [
                     {
                         'id': '1',
@@ -357,11 +361,11 @@ class VolumeApiTest(test.TestCase):
                 'size': 1,
                 'links': [
                     {
-                        'href': 'http://localhost/v2/fake/volumes/1',
+                        'href': 'http://localhost/v2/fakeproject/volumes/1',
                         'rel': 'self'
                     },
                     {
-                        'href': 'http://localhost/fake/volumes/1',
+                        'href': 'http://localhost/fakeproject/volumes/1',
                         'rel': 'bookmark'
                     }
                 ],
@@ -393,6 +397,7 @@ class VolumeApiTest(test.TestCase):
                 'availability_zone': 'fakeaz',
                 'bootable': 'false',
                 'name': 'New Name',
+                'replication_status': 'disabled',
                 'attachments': [
                     {
                         'id': '1',
@@ -412,11 +417,11 @@ class VolumeApiTest(test.TestCase):
                 'size': 1,
                 'links': [
                     {
-                        'href': 'http://localhost/v2/fake/volumes/1',
+                        'href': 'http://localhost/v2/fakeproject/volumes/1',
                         'rel': 'self'
                     },
                     {
-                        'href': 'http://localhost/fake/volumes/1',
+                        'href': 'http://localhost/fakeproject/volumes/1',
                         'rel': 'bookmark'
                     }
                 ],
@@ -443,6 +448,7 @@ class VolumeApiTest(test.TestCase):
             'availability_zone': 'fakeaz',
             'bootable': 'false',
             'name': 'displayname',
+            'replication_status': 'disabled',
             'attachments': [{
                 'id': '1',
                 'volume_id': '1',
@@ -462,11 +468,11 @@ class VolumeApiTest(test.TestCase):
             'size': 1,
             'links': [
                 {
-                    'href': 'http://localhost/v2/fake/volumes/1',
+                    'href': 'http://localhost/v2/fakeproject/volumes/1',
                     'rel': 'self'
                 },
                 {
-                    'href': 'http://localhost/fake/volumes/1',
+                    'href': 'http://localhost/fakeproject/volumes/1',
                     'rel': 'bookmark'
                 }
             ],
@@ -504,6 +510,7 @@ class VolumeApiTest(test.TestCase):
             'availability_zone': 'fakeaz',
             'bootable': 'false',
             'name': 'Updated Test Name',
+            'replication_status': 'disabled',
             'attachments': [{
                 'id': '1',
                 'volume_id': '1',
@@ -575,11 +582,12 @@ class VolumeApiTest(test.TestCase):
                     'id': '1',
                     'links': [
                         {
-                            'href': 'http://localhost/v2/fake/volumes/1',
+                            'href': 'http://localhost/v2/fakeproject/volumes/'
+                                    '1',
                             'rel': 'self'
                         },
                         {
-                            'href': 'http://localhost/fake/volumes/1',
+                            'href': 'http://localhost/fakeproject/volumes/1',
                             'rel': 'bookmark'
                         }
                     ],
@@ -606,6 +614,7 @@ class VolumeApiTest(test.TestCase):
                     'availability_zone': 'fakeaz',
                     'bootable': 'false',
                     'name': 'displayname',
+                    'replication_status': 'disabled',
                     'attachments': [
                         {
                             'device': '/',
@@ -625,11 +634,12 @@ class VolumeApiTest(test.TestCase):
                     'size': 1,
                     'links': [
                         {
-                            'href': 'http://localhost/v2/fake/volumes/1',
+                            'href': 'http://localhost/v2/fakeproject/volumes/'
+                                    '1',
                             'rel': 'self'
                         },
                         {
-                            'href': 'http://localhost/fake/volumes/1',
+                            'href': 'http://localhost/fakeproject/volumes/1',
                             'rel': 'bookmark'
                         }
                     ],
@@ -665,6 +675,7 @@ class VolumeApiTest(test.TestCase):
                     'availability_zone': 'fakeaz',
                     'bootable': 'false',
                     'name': 'displayname',
+                    'replication_status': 'disabled',
                     'attachments': [
                         {
                             'device': '/',
@@ -731,7 +742,7 @@ class VolumeApiTest(test.TestCase):
         links = res_dict['volumes_links']
         self.assertEqual(links[0]['rel'], 'next')
         href_parts = urlparse.urlparse(links[0]['href'])
-        self.assertEqual('/v2/fake/volumes', href_parts.path)
+        self.assertEqual('/v2/fakeproject/volumes', href_parts.path)
         params = urlparse.parse_qs(href_parts.query)
         self.assertTrue('marker' in params)
         self.assertEqual('1', params['limit'][0])
@@ -820,7 +831,7 @@ class VolumeApiTest(test.TestCase):
         links = res_dict['volumes_links']
         self.assertEqual(links[0]['rel'], 'next')
         href_parts = urlparse.urlparse(links[0]['href'])
-        self.assertEqual('/v2/fake/volumes/detail', href_parts.path)
+        self.assertEqual('/v2/fakeproject/volumes/detail', href_parts.path)
         params = urlparse.parse_qs(href_parts.query)
         self.assertTrue('marker' in params)
         self.assertEqual('1', params['limit'][0])
@@ -900,7 +911,7 @@ class VolumeApiTest(test.TestCase):
             '''Verify next link and url.'''
             self.assertEqual(links[0]['rel'], 'next')
             href_parts = urlparse.urlparse(links[0]['href'])
-            self.assertEqual('/v2/fake/%s' % key, href_parts.path)
+            self.assertEqual('/v2/fakeproject/%s' % key, href_parts.path)
 
         # Verify both the index and detail queries
         api_keys = ['volumes', 'volumes/detail']
@@ -913,7 +924,7 @@ class VolumeApiTest(test.TestCase):
                                 viewable_admin_meta=False):
             vols = [stubs.stub_volume(i)
                     for i in xrange(CONF.osapi_max_limit)]
-            if limit == None or limit >= len(vols):
+            if limit is None or limit >= len(vols):
                 return vols
             return vols[:limit]
         self.stubs.Set(db, 'volume_get_all', stub_volume_get_all)
@@ -932,7 +943,7 @@ class VolumeApiTest(test.TestCase):
                                  viewable_admin_meta=False):
             vols = [stubs.stub_volume(i)
                     for i in xrange(100)]
-            if limit == None or limit >= len(vols):
+            if limit is None or limit >= len(vols):
                 return vols
             return vols[:limit]
         self.stubs.Set(db, 'volume_get_all', stub_volume_get_all2)
@@ -950,7 +961,7 @@ class VolumeApiTest(test.TestCase):
                                  viewable_admin_meta=False):
             vols = [stubs.stub_volume(i)
                     for i in xrange(CONF.osapi_max_limit + 100)]
-            if limit == None or limit >= len(vols):
+            if limit is None or limit >= len(vols):
                 return vols
             return vols[:limit]
         self.stubs.Set(db, 'volume_get_all', stub_volume_get_all3)
@@ -1064,6 +1075,7 @@ class VolumeApiTest(test.TestCase):
                 'availability_zone': 'fakeaz',
                 'bootable': 'false',
                 'name': 'displayname',
+                'replication_status': 'disabled',
                 'attachments': [
                     {
                         'device': '/',
@@ -1083,11 +1095,11 @@ class VolumeApiTest(test.TestCase):
                 'size': 1,
                 'links': [
                     {
-                        'href': 'http://localhost/v2/fake/volumes/1',
+                        'href': 'http://localhost/v2/fakeproject/volumes/1',
                         'rel': 'self'
                     },
                     {
-                        'href': 'http://localhost/fake/volumes/1',
+                        'href': 'http://localhost/fakeproject/volumes/1',
                         'rel': 'bookmark'
                     }
                 ],
@@ -1113,6 +1125,7 @@ class VolumeApiTest(test.TestCase):
                 'availability_zone': 'fakeaz',
                 'bootable': 'false',
                 'name': 'displayname',
+                'replication_status': 'disabled',
                 'attachments': [],
                 'user_id': 'fakeuser',
                 'volume_type': 'vol_type_name',
@@ -1124,11 +1137,11 @@ class VolumeApiTest(test.TestCase):
                 'size': 1,
                 'links': [
                     {
-                        'href': 'http://localhost/v2/fake/volumes/1',
+                        'href': 'http://localhost/v2/fakeproject/volumes/1',
                         'rel': 'self'
                     },
                     {
-                        'href': 'http://localhost/fake/volumes/1',
+                        'href': 'http://localhost/fakeproject/volumes/1',
                         'rel': 'bookmark'
                     }
                 ],
@@ -1170,6 +1183,7 @@ class VolumeApiTest(test.TestCase):
                 'availability_zone': 'fakeaz',
                 'bootable': 'false',
                 'name': 'displayname',
+                'replication_status': 'disabled',
                 'attachments': [
                     {
                         'device': '/',

@@ -22,13 +22,13 @@ SHOULD include dedicated exception logging.
 
 """
 
-import six
 import sys
 
 from oslo.config import cfg
+import six
 import webob.exc
 
-from cinder.openstack.common.gettextutils import _
+from cinder.i18n import _
 from cinder.openstack.common import log as logging
 
 
@@ -37,7 +37,7 @@ LOG = logging.getLogger(__name__)
 exc_log_opts = [
     cfg.BoolOpt('fatal_exception_format_errors',
                 default=False,
-                help='make exception message format errors fatal'),
+                help='Make exception message format errors fatal.'),
 ]
 
 CONF = cfg.CONF
@@ -292,6 +292,18 @@ class SnapshotIsBusy(CinderException):
 
 class ISCSITargetNotFoundForVolume(NotFound):
     message = _("No target id found for volume %(volume_id)s.")
+
+
+class ISCSITargetCreateFailed(CinderException):
+    message = _("Failed to create iscsi target for volume %(volume_id)s.")
+
+
+class ISCSITargetRemoveFailed(CinderException):
+    message = _("Failed to remove iscsi target for volume %(volume_id)s.")
+
+
+class ISCSITargetAttachFailed(CinderException):
+    message = _("Failed to attach iSCSI target for volume %(volume_id)s.")
 
 
 class InvalidImageRef(Invalid):
@@ -572,6 +584,16 @@ class KeyManagerError(CinderException):
 class ManageExistingInvalidReference(CinderException):
     message = _("Manage existing volume failed due to invalid backend "
                 "reference %(existing_ref)s: %(reason)s")
+
+
+class ReplicationError(CinderException):
+    message = _("Volume %(volume_id)s replication "
+                "error: %(reason)s")
+
+
+class ReplicationNotFound(NotFound):
+    message = _("Volume replication for %(volume_id)s "
+                "could not be found.")
 
 
 class ManageExistingVolumeTypeMismatch(CinderException):

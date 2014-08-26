@@ -31,10 +31,15 @@ Guidelines for writing new hacking checks
 
 UNDERSCORE_IMPORT_FILES = []
 
-log_translation = re.compile(
-    r"(.)*LOG\.(audit|error|info|warn|warning|critical|exception)_\(\s*('|\")")
+translated_log = re.compile(
+    r"(.)*LOG\.(audit|error|info|warn|warning|critical|exception)"
+    "\(\s*_\(\s*('|\")")
 string_translation = re.compile(r"(.)*_\(\s*('|\")")
 vi_header_re = re.compile(r"^#\s+vim?:.+")
+underscore_import_check = re.compile(r"(.)*import _(.)*")
+# We need this for cases where they have created their own _ function.
+custom_underscore_check = re.compile(r"(.)*_\s*=\s*(.)*")
+no_audit_log = re.compile(r"(.)*LOG\.audit(.)*")
 
 
 def no_vi_headers(physical_line, line_number, lines):
@@ -87,11 +92,25 @@ def check_explicit_underscore_import(logical_line, filename):
     # checking needed once it is found.
     if filename in UNDERSCORE_IMPORT_FILES:
         pass
-    elif logical_line.endswith("import _"):
+    elif (underscore_import_check.match(logical_line) or
+          custom_underscore_check.match(logical_line)):
         UNDERSCORE_IMPORT_FILES.append(filename)
-    elif(log_translation.match(logical_line) or
+    elif(translated_log.match(logical_line) or
          string_translation.match(logical_line)):
         yield(0, "N323: Found use of _() without explicit import of _ !")
+
+
+def check_no_log_audit(logical_line):
+    """Ensure that we are not using LOG.audit messages
+
+    Plans are in place going forward as discussed in the following
+    spec (https://review.openstack.org/#/c/91446/) to take out
+    LOG.audit messages.  Given that audit was a concept invented
+    for OpenStack we can enforce not using it.
+    """
+
+    if no_audit_log.match(logical_line):
+        yield(0, "N324: Found LOG.audit.  Use LOG.info instead.")
 
 
 def factory(register):
@@ -99,3 +118,4 @@ def factory(register):
     register(no_translate_debug_logs)
     register(no_mutable_default_args)
     register(check_explicit_underscore_import)
+    register(check_no_log_audit)

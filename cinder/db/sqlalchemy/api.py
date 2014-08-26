@@ -30,7 +30,8 @@ from oslo.config import cfg
 from oslo.db import exception as db_exc
 from oslo.db import options
 from oslo.db.sqlalchemy import session as db_session
-from sqlalchemy.exc import IntegrityError
+import osprofiler.sqlalchemy
+import sqlalchemy
 from sqlalchemy import or_
 from sqlalchemy.orm import joinedload, joinedload_all
 from sqlalchemy.orm import RelationshipProperty
@@ -40,13 +41,14 @@ from sqlalchemy.sql import func
 from cinder.common import sqlalchemyutils
 from cinder.db.sqlalchemy import models
 from cinder import exception
-from cinder.openstack.common.gettextutils import _
+from cinder.i18n import _
 from cinder.openstack.common import log as logging
 from cinder.openstack.common import timeutils
 from cinder.openstack.common import uuidutils
 
 
 CONF = cfg.CONF
+CONF.import_group("profiler", "cinder.service")
 LOG = logging.getLogger(__name__)
 
 options.set_defaults(CONF, connection='sqlite:///$state_path/cinder.sqlite')
@@ -64,6 +66,13 @@ def _create_facade_lazily():
                 CONF.database.connection,
                 **dict(CONF.database.iteritems())
             )
+
+            if CONF.profiler.profiler_enabled:
+                if CONF.profiler.trace_sqlalchemy:
+                    osprofiler.sqlalchemy.add_tracing(sqlalchemy,
+                                                      _FACADE.get_engine(),
+                                                      "db")
+
         return _FACADE
 
 
@@ -470,12 +479,15 @@ def iscsi_target_create_safe(context, values):
     for (key, value) in values.iteritems():
         iscsi_target_ref[key] = value
     session = get_session()
-    with session.begin():
-        try:
-            iscsi_target_ref.save(session)
+
+    try:
+        with session.begin():
+            session.add(iscsi_target_ref)
             return iscsi_target_ref
-        except IntegrityError:
-            return None
+    # TODO(e0ne): Remove check on db_exc.DBError, when
+    #             Cinder will use oslo.db 0.4.0 or higher.
+    except (db_exc.DBError, db_exc.DBDuplicateEntry):
+        return None
 
 
 ###################
@@ -1189,7 +1201,7 @@ def volume_get_all(context, marker, limit, sort_key, sort_dir,
         query = _generate_paginate_query(context, session, marker, limit,
                                          sort_key, sort_dir, filters)
         # No volumes would match, return empty list
-        if query == None:
+        if query is None:
             return []
         return query.all()
 
@@ -1227,7 +1239,7 @@ def volume_get_all_by_project(context, project_id, marker, limit, sort_key,
         query = _generate_paginate_query(context, session, marker, limit,
                                          sort_key, sort_dir, filters)
         # No volumes would match, return empty list
-        if query == None:
+        if query is None:
             return []
         return query.all()
 
@@ -1260,11 +1272,11 @@ def _generate_paginate_query(context, session, marker, limit, sort_key,
         # 'no_migration_targets' is unique, must be either NULL or
         # not start with 'target:'
         if ('no_migration_targets' in filters and
-                filters['no_migration_targets'] == True):
+                filters['no_migration_targets'] is True):
             filters.pop('no_migration_targets')
             try:
                 column_attr = getattr(models.Volume, 'migration_status')
-                conditions = [column_attr == None,
+                conditions = [column_attr == None,  # noqa
                               column_attr.op('NOT LIKE')('target:%')]
                 query = query.filter(or_(*conditions))
             except AttributeError:
@@ -1665,7 +1677,7 @@ def snapshot_get_active_by_window(context, begin, end=None, project_id=None):
     """Return snapshots that were active during window."""
 
     query = model_query(context, models.Snapshot, read_deleted="yes")
-    query = query.filter(or_(models.Snapshot.deleted_at == None,
+    query = query.filter(or_(models.Snapshot.deleted_at == None,  # noqa
                              models.Snapshot.deleted_at > begin))
     query = query.options(joinedload(models.Snapshot.volume))
     if end:
@@ -1991,7 +2003,7 @@ def volume_get_active_by_window(context,
                                 project_id=None):
     """Return volumes that were active during window."""
     query = model_query(context, models.Volume, read_deleted="yes")
-    query = query.filter(or_(models.Volume.deleted_at == None,
+    query = query.filter(or_(models.Volume.deleted_at == None,  # noqa
                              models.Volume.deleted_at > begin))
     if end:
         query = query.filter(models.Volume.created_at < end)

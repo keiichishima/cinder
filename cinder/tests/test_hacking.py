@@ -92,3 +92,21 @@ class HackingTestCase(test.TestCase):
         self.assertEqual(len(list(checks.check_explicit_underscore_import(
             "msg = _('My message')",
             "cinder/tests/other_files.py"))), 0)
+        self.assertEqual(len(list(checks.check_explicit_underscore_import(
+            "from cinder.i18n import _, _LW",
+            "cinder/tests/other_files2.py"))), 0)
+        self.assertEqual(len(list(checks.check_explicit_underscore_import(
+            "msg = _('My message')",
+            "cinder/tests/other_files2.py"))), 0)
+        self.assertEqual(len(list(checks.check_explicit_underscore_import(
+            "_ = translations.ugettext",
+            "cinder/tests/other_files3.py"))), 0)
+        self.assertEqual(len(list(checks.check_explicit_underscore_import(
+            "msg = _('My message')",
+            "cinder/tests/other_files3.py"))), 0)
+
+    def test_check_no_log_audit(self):
+        self.assertEqual(len(list(checks.check_no_log_audit(
+            "LOG.audit('My test audit log')"))), 1)
+        self.assertEqual(len(list(checks.check_no_log_audit(
+            "LOG.info('My info test log.')"))), 0)

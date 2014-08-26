@@ -105,7 +105,7 @@ class HTTPRequest(webob.Request):
 
     @classmethod
     def blank(cls, *args, **kwargs):
-        if args != None:
+        if args is not None:
             if args[0].find('v1') == 0:
                 kwargs['base_url'] = 'http://localhost/v1'
             else:
@@ -115,7 +115,7 @@ class HTTPRequest(webob.Request):
         out = os_wsgi.Request.blank(*args, **kwargs)
         out.environ['cinder.context'] = FakeRequestContext(
             'fake_user',
-            'fake',
+            'fakeproject',
             is_admin=use_admin_context)
         return out
 

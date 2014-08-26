@@ -24,8 +24,8 @@ import greenlet
 from oslo.config import cfg
 
 from cinder import exception
+from cinder.i18n import _
 from cinder.openstack.common import excutils
-from cinder.openstack.common.gettextutils import _
 from cinder.openstack.common import log as logging
 from cinder.openstack.common import processutils
 from cinder import ssh_utils
@@ -450,7 +450,7 @@ class DellEQLSanISCSIDriver(SanISCSIDriver):
             out = self._eql_execute('volume', 'select', volume['name'],
                                     'access', 'show')
             connection_id = self._parse_connection(connector, out)
-            if connection_id != None:
+            if connection_id is not None:
                 self._eql_execute('volume', 'select', volume['name'],
                                   'access', 'delete', connection_id)
         except Exception:

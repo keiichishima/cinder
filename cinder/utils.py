@@ -29,18 +29,18 @@ import shutil
 import stat
 import sys
 import tempfile
-
-from oslo.config import cfg
-import six
 from xml.dom import minidom
 from xml.parsers import expat
 from xml import sax
 from xml.sax import expatreader
 from xml.sax import saxutils
 
+from oslo.config import cfg
+import six
+
 from cinder.brick.initiator import connector
 from cinder import exception
-from cinder.openstack.common.gettextutils import _
+from cinder.i18n import _
 from cinder.openstack.common import importutils
 from cinder.openstack.common import lockutils
 from cinder.openstack.common import log as logging
@@ -129,7 +129,7 @@ def check_exclusive_options(**kwargs):
 
 def execute(*cmd, **kwargs):
     """Convenience wrapper around oslo's execute() method."""
-    if 'run_as_root' in kwargs and not 'root_helper' in kwargs:
+    if 'run_as_root' in kwargs and 'root_helper' not in kwargs:
         kwargs['root_helper'] = get_root_helper()
     return processutils.execute(*cmd, **kwargs)
 

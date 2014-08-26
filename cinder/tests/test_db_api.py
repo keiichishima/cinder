@@ -658,10 +658,12 @@ class DBAPIVolumeTestCase(BaseTest):
 
     def test_volume_update(self):
         volume = db.volume_create(self.ctxt, {'host': 'h1'})
-        db.volume_update(self.ctxt, volume['id'],
-                         {'host': 'h2', 'metadata': {'m1': 'v1'}})
+        ref_a = db.volume_update(self.ctxt, volume['id'],
+                                 {'host': 'h2',
+                                  'metadata': {'m1': 'v1'}})
         volume = db.volume_get(self.ctxt, volume['id'])
         self.assertEqual('h2', volume['host'])
+        self.assertEqual(dict(ref_a), dict(volume))
 
     def test_volume_update_nonexistent(self):
         self.assertRaises(exception.VolumeNotFound, db.volume_update,
@@ -1124,11 +1126,11 @@ class DBAPIIscsiTargetTestCase(BaseTest):
         self.assertEqual(db.iscsi_target_count_by_host(self.ctxt, 'fake_host'),
                          3)
 
-    @test.testtools.skip("bug 1187367")
     def test_integrity_error(self):
-        db.iscsi_target_create_safe(self.ctxt, self._get_base_values())
-        self.assertFalse(db.iscsi_target_create_safe(self.ctxt,
-                                                     self._get_base_values()))
+        values = self._get_base_values()
+        values['id'] = 1
+        db.iscsi_target_create_safe(self.ctxt, values)
+        self.assertFalse(db.iscsi_target_create_safe(self.ctxt, values))
 
 
 class DBAPIBackupTestCase(BaseTest):

@@ -20,7 +20,6 @@ Tests for Volume Code.
 
 import contextlib
 import datetime
-import mock
 import os
 import shutil
 import socket
@@ -28,6 +27,7 @@ from sys import platform
 import tempfile
 
 import eventlet
+import mock
 import mox
 from oslo.config import cfg
 from stevedore import extension
@@ -102,7 +102,11 @@ class BaseVolumeTestCase(test.TestCase):
         self.flags(volumes_dir=vol_tmpdir,
                    notification_driver=["test"])
         self.addCleanup(self._cleanup)
-        self.volume = importutils.import_object(CONF.volume_manager)
+        with mock.patch("osprofiler.profiler.trace_cls") as mock_trace_cls:
+            side_effect = lambda value: value
+            mock_decorator = mock.MagicMock(side_effect=side_effect)
+            mock_trace_cls.return_value = mock_decorator
+            self.volume = importutils.import_object(CONF.volume_manager)
         self.context = context.get_admin_context()
         self.context.user_id = 'fake'
         self.context.project_id = 'fake'
@@ -357,6 +361,9 @@ class VolumeTestCase(BaseVolumeTestCase):
             'user_id': 'fake',
             'launched_at': 'DONTCARE',
             'size': 1,
+            'replication_status': 'disabled',
+            'replication_extended_status': None,
+            'replication_driver_data': None,
         }
         self.assertDictMatch(msg['payload'], expected)
         msg = fake_notifier.NOTIFICATIONS[1]
@@ -602,6 +609,28 @@ class VolumeTestCase(BaseVolumeTestCase):
         self.assertEqual("available", volume_ref.status)
 
         self.mox.UnsetStubs()
+        self.volume.delete_volume(self.context, volume_id)
+
+    def test_get_volume_different_tenant(self):
+        """Test can't get volume of another tenant when viewable_admin_meta."""
+        volume = tests_utils.create_volume(self.context,
+                                           **self.volume_params)
+        volume_id = volume['id']
+        self.volume.create_volume(self.context, volume_id)
+
+        another_context = context.RequestContext('another_user_id',
+                                                 'another_project_id',
+                                                 is_admin=False)
+        self.assertNotEqual(another_context.project_id,
+                            self.context.project_id)
+
+        volume_api = cinder.volume.api.API()
+
+        self.assertRaises(exception.VolumeNotFound, volume_api.get,
+                          another_context, volume_id, viewable_admin_meta=True)
+        self.assertEqual(volume_id,
+                         volume_api.get(self.context, volume_id)['id'])
+
         self.volume.delete_volume(self.context, volume_id)
 
     def test_delete_volume_in_error_extending(self):
@@ -1638,6 +1667,7 @@ class VolumeTestCase(BaseVolumeTestCase):
         self.assertDictMatch(msg['payload'], expected)
         msg = fake_notifier.NOTIFICATIONS[3]
         self.assertEqual(msg['event_type'], 'snapshot.create.end')
+        expected['status'] = 'available'
         self.assertDictMatch(msg['payload'], expected)
 
         self.volume.delete_snapshot(self.context, snapshot_id)
@@ -1677,6 +1707,42 @@ class VolumeTestCase(BaseVolumeTestCase):
                           db.snapshot_get,
                           self.context,
                           snapshot_id)
+
+    @mock.patch.object(db, 'snapshot_create',
+                       side_effect=exception.InvalidSnapshot(
+                           'Create snapshot in db failed!'))
+    def test_create_snapshot_failed_db_snapshot(self, mock_snapshot):
+        """Test exception handling when create snapshot in db failed."""
+        test_volume = tests_utils.create_volume(
+            self.context,
+            **self.volume_params)
+        self.volume.create_volume(self.context, test_volume['id'])
+        test_volume['status'] = 'available'
+        volume_api = cinder.volume.api.API()
+        self.assertRaises(exception.InvalidSnapshot,
+                          volume_api.create_snapshot,
+                          self.context,
+                          test_volume,
+                          'fake_name',
+                          'fake_description')
+
+    @mock.patch.object(QUOTAS, 'commit',
+                       side_effect=exception.QuotaError(
+                           'Snapshot quota commit failed!'))
+    def test_create_snapshot_failed_quota_commit(self, mock_snapshot):
+        """Test exception handling when snapshot quota commit failed."""
+        test_volume = tests_utils.create_volume(
+            self.context,
+            **self.volume_params)
+        self.volume.create_volume(self.context, test_volume['id'])
+        test_volume['status'] = 'available'
+        volume_api = cinder.volume.api.API()
+        self.assertRaises(exception.QuotaError,
+                          volume_api.create_snapshot,
+                          self.context,
+                          test_volume,
+                          'fake_name',
+                          'fake_description')
 
     def test_cannot_delete_volume_in_use(self):
         """Test volume can't be deleted in invalid stats."""
@@ -2386,6 +2452,28 @@ class VolumeTestCase(BaseVolumeTestCase):
         self.assertRaises(exception.CinderException,
                           self.volume.create_volume, ctxt, volume_src['id'])
 
+    @mock.patch(
+        'cinder.volume.driver.VolumeDriver.create_replica_test_volume')
+    def test_create_volume_from_sourcereplica(self, _create_replica_test):
+        """Test volume can be created from a volume replica."""
+        _create_replica_test.return_value = None
+
+        volume_src = tests_utils.create_volume(self.context,
+                                               **self.volume_params)
+        self.volume.create_volume(self.context, volume_src['id'])
+        volume_dst = tests_utils.create_volume(self.context,
+                                               source_replicaid=
+                                               volume_src['id'],
+                                               **self.volume_params)
+        self.volume.create_volume(self.context, volume_dst['id'],
+                                  source_replicaid=volume_src['id'])
+        self.assertEqual('available',
+                         db.volume_get(context.get_admin_context(),
+                                       volume_dst['id']).status)
+        self.assertTrue(_create_replica_test.called)
+        self.volume.delete_volume(self.context, volume_dst['id'])
+        self.volume.delete_volume(self.context, volume_src['id'])
+
     def test_create_volume_from_sourcevol(self):
         """Test volume can be created from a source volume."""
         def fake_create_cloned_volume(volume, src_vref):
@@ -2647,7 +2735,8 @@ class VolumeTestCase(BaseVolumeTestCase):
         self.assertEqual(volume['status'], 'available')
 
     def _retype_volume_exec(self, driver, snap=False, policy='on-demand',
-                            migrate_exc=False, exc=None, diff_equal=False):
+                            migrate_exc=False, exc=None, diff_equal=False,
+                            replica=False):
         elevated = context.get_admin_context()
         project_id = self.context.project_id
 
@@ -2657,9 +2746,14 @@ class VolumeTestCase(BaseVolumeTestCase):
         vol_type = db.volume_type_get_by_name(elevated, 'new')
         db.quota_create(elevated, project_id, 'volumes_new', 10)
 
+        if replica:
+            rep_status = 'active'
+        else:
+            rep_status = 'disabled'
         volume = tests_utils.create_volume(self.context, size=1,
                                            host=CONF.host, status='retyping',
-                                           volume_type_id=old_vol_type['id'])
+                                           volume_type_id=old_vol_type['id'],
+                                           replication_status=rep_status)
         if snap:
             self._create_snapshot(volume['id'], size=volume['size'])
         if driver or diff_equal:
@@ -2729,6 +2823,11 @@ class VolumeTestCase(BaseVolumeTestCase):
         # Test volume retype that requires migration by not allowed
         self._retype_volume_exec(False, policy='never',
                                  exc=exception.VolumeMigrationFailed)
+
+    def test_retype_volume_migration_with_replica(self):
+        self._retype_volume_exec(False,
+                                 replica=True,
+                                 exc=exception.InvalidVolume)
 
     def test_retype_volume_migration_with_snaps(self):
         self._retype_volume_exec(False, snap=True, exc=exception.InvalidVolume)

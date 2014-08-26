@@ -198,7 +198,7 @@
 # Options defined in cinder.exception
 #
 
-# make exception message format errors fatal (boolean value)
+# Make exception message format errors fatal. (boolean value)
 #fatal_exception_format_errors=false
 
 
@@ -404,10 +404,24 @@
 #
 
 # The URL of the Swift endpoint (string value)
-#backup_swift_url=http://localhost:8080/v1/AUTH_
+#backup_swift_url=<None>
+
+# Info to match when looking for swift in the service catalog.
+# Format is: separated values of the form:
+# <service_type>:<service_name>:<endpoint_type> - Only used if
+# backup_swift_url is unset (string value)
+#swift_catalog_info=object-store:swift:publicURL
 
 # Swift authentication mechanism (string value)
 #backup_swift_auth=per_user
+
+# Swift authentication version. Specify "1" for auth 1.0, or
+# "2" for auth 2.0 (string value)
+#backup_swift_auth_version=1
+
+# Swift tenant/account name. Required when connecting to an
+# auth 2.0 system (string value)
+#backup_swift_tenant=<None>
 
 # Swift user name (string value)
 #backup_swift_user=<None>
@@ -601,6 +615,10 @@
 # value)
 #transfer_api_class=cinder.transfer.api.API
 
+# The full class name of the volume replication API class
+# (string value)
+#replication_api_class=cinder.replication.api.API
+
 
 #
 # Options defined in cinder.compute
@@ -758,7 +776,7 @@
 #logging_exception_prefix=%(asctime)s.%(msecs)03d %(process)d TRACE %(name)s %(instance)s
 
 # List of logger=LEVEL pairs. (list value)
-#default_log_levels=amqp=WARN,amqplib=WARN,boto=WARN,qpid=WARN,sqlalchemy=WARN,suds=INFO,oslo.messaging=INFO,iso8601=WARN,requests.packages.urllib3.connectionpool=WARN,urllib3.connectionpool=WARN,websocket=WARN
+#default_log_levels=amqp=WARN,amqplib=WARN,boto=WARN,qpid=WARN,sqlalchemy=WARN,suds=INFO,oslo.messaging=INFO,iso8601=WARN,requests.packages.urllib3.connectionpool=WARN,urllib3.connectionpool=WARN,websocket=WARN,keystonemiddleware=WARN,routes.middleware=WARN
 
 # Enables or disables publication of error events. (boolean
 # value)
@@ -1081,10 +1099,10 @@
 
 
 #
-# Options defined in cinder.volume.drivers.emc.emc_smis_common
+# Options defined in cinder.volume.drivers.emc.emc_vmax_common
 #
 
-# The configuration file for the Cinder EMC driver (string
+# use this file for cinder emc plugin config data (string
 # value)
 #cinder_emc_config_file=/etc/cinder/cinder_emc_config.xml
 
@@ -1103,14 +1121,18 @@
 # Naviseccli Path. (string value)
 #naviseccli_path=
 
-# Storage pool name (string value)
+# Storage pool name. (string value)
 #storage_vnx_pool_name=<None>
 
 # VNX secondary SP IP Address. (string value)
 #san_secondary_ip=<None>
 
-# Default Time Out For CLI operations in minutes. By default,
-# it is 365 days long. (integer value)
+# Default timeout for CLI operations in minutes. For example,
+# LUN migration is a typical long running operation, which
+# depends on the LUN size and the load of the array. An upper
+# bound in the specific deployment can be set to avoid
+# unnecessary long wait. By default, it is 365 days long.
+# (integer value)
 #default_timeout=525600
 
 # Default max number of LUNs in a storage group. By default,
@@ -1192,7 +1214,7 @@
 # Options defined in cinder.volume.drivers.hds.iscsi
 #
 
-# configuration file for HDS iSCSI cinder plugin (string
+# Configuration file for HDS iSCSI cinder plugin (string
 # value)
 #hds_hnas_iscsi_config_file=/opt/hds/hnas/cinder_iscsi_conf.xml
 
@@ -1201,7 +1223,7 @@
 # Options defined in cinder.volume.drivers.hds.nfs
 #
 
-# configuration file for HDS NFS cinder plugin (string value)
+# Configuration file for HDS NFS cinder plugin (string value)
 #hds_hnas_nfs_config_file=/opt/hds/hnas/cinder_nfs_conf.xml
 
 
@@ -1254,6 +1276,33 @@
 # Specifies the storage pool that volumes are assigned to.  By
 # default, the system storage pool is used. (string value)
 #gpfs_storage_pool=<None>
+
+
+#
+# Options defined in cinder.volume.drivers.ibm.ibmnas
+#
+
+# IP address or Hostname of NAS system. (string value)
+#nas_ip=
+
+# User name to connect to NAS system. (string value)
+#nas_login=admin
+
+# Password to connect to NAS system. (string value)
+#nas_password=
+
+# SSH port to use to connect to NAS system. (integer value)
+#nas_ssh_port=22
+
+# Filename of private key to use for SSH authentication.
+# (string value)
+#nas_private_key=
+
+# IBMNAS platform type to be used as backend storage; valid
+# values are - v7ku : for using IBM Storwize V7000 Unified,
+# sonas : for using IBM Scale Out NAS, gpfs-nas : for using
+# NFS based IBM GPFS deployments. (string value)
+#ibmnas_platform_type=v7ku
 
 
 #
@@ -1609,6 +1658,18 @@
 
 
 #
+# Options defined in cinder.volume.drivers.prophetstor.options
+#
+
+# DPL pool uuid in which DPL volumes are stored. (string
+# value)
+#dpl_pool=
+
+# DPL port number. (integer value)
+#dpl_port=8357
+
+
+#
 # Options defined in cinder.volume.drivers.pure
 #
 
@@ -1692,6 +1753,10 @@
 
 # List of target iSCSI addresses to use. (list value)
 #hp3par_iscsi_ips=
+
+# Enable CHAP authentication for iSCSI connections. (boolean
+# value)
+#hp3par_iscsi_chap_enabled=false
 
 
 #
@@ -1838,8 +1903,8 @@
 #vmware_api_retry_count=10
 
 # The interval (in seconds) for polling remote tasks invoked
-# on VMware ESX/VC server. (integer value)
-#vmware_task_poll_interval=5
+# on VMware ESX/VC server. (floating point value)
+#vmware_task_poll_interval=0.5
 
 # Name for the folder in the VC datacenter that will contain
 # cinder volumes. (string value)
@@ -2154,6 +2219,17 @@
 #fixed_key=<None>
 
 
+#
+# Options defined in cinder.keymgr.key_mgr
+#
+
+# Authentication url for encryption service. (string value)
+#encryption_auth_url=http://localhost:5000/v2.0
+
+# Url for encryption service. (string value)
+#encryption_api_url=http://localhost:9311/v1
+
+
 [keystone_authtoken]
 
 #
@@ -2318,6 +2394,19 @@
 # Matchmaker ring file (JSON). (string value)
 # Deprecated group/name - [DEFAULT]/matchmaker_ringfile
 #ringfile=/etc/oslo/matchmaker_ring.json
+
+
+[profiler]
+
+#
+# Options defined in cinder.service
+#
+
+# If False fully disable profiling feature. (boolean value)
+#profiler_enabled=false
+
+# If False doesn't trace SQL requests. (boolean value)
+#trace_sqlalchemy=false
 
 
 [ssl]

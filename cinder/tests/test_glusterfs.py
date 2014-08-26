@@ -16,12 +16,12 @@
 
 import contextlib
 import errno
-import mock
 import os
 import tempfile
 import time
 import traceback
 
+import mock
 import mox as mox_lib
 from mox import IgnoreArg
 from mox import IsA
@@ -33,8 +33,8 @@ from cinder import compute
 from cinder import context
 from cinder import db
 from cinder import exception
+from cinder.i18n import _
 from cinder.image import image_utils
-from cinder.openstack.common.gettextutils import _
 from cinder.openstack.common import imageutils
 from cinder.openstack.common import processutils as putils
 from cinder.openstack.common import units
@@ -793,7 +793,7 @@ class GlusterFsDriverTestCase(test.TestCase):
 
             self.assertTrue(mock_do_umount.called)
             self.assertTrue(mock_logger.warning.called)
-            mock_logger.debug.assert_not_called()
+            self.assertFalse(mock_logger.debug.called)
 
     def test_unmount_shares_1share(self):
         self._driver.shares = {'127.7.7.7:/gluster1': None}
@@ -932,7 +932,7 @@ class GlusterFsDriverTestCase(test.TestCase):
             try:
                 self._driver._do_umount(True, test_share)
             except putils.ProcessExecutionError:
-                mock_logger.info.assert_not_called()
+                self.assertFalse(mock_logger.info.called)
                 self.assertTrue(mock_logger.error.called)
             except Exception as e:
                 self.fail('Unexpected exception thrown:', e)
@@ -1842,8 +1842,8 @@ class GlusterFsDriverTestCase(test.TestCase):
 
         mock_local_path_volume.assert_called_with(snapshot['volume'])
         mock_read_info_file.assert_called_with(info_path)
-        mock_delete_if_exists.assert_not_called()
-        mock_write_info_file.assert_not_called()
+        self.assertFalse(mock_delete_if_exists.called)
+        self.assertFalse(mock_write_info_file.called)
 
         # Test case where snapshot_file != active_file
         snapshot = {'name': 'fake-volume',
@@ -2061,7 +2061,7 @@ class GlusterFsDriverTestCase(test.TestCase):
                          self.TEST_MNT_POINT_BASE)
 
     def test_get_mount_point_base(self):
-        (mox, drv) = self._mox, self._driver
+        drv = self._driver
 
         self.assertEqual(drv._get_mount_point_base(),
                          self.TEST_MNT_POINT_BASE)

@@ -21,9 +21,8 @@ from cinder.api import extensions
 from cinder.api.openstack import wsgi
 from cinder.api.views import transfers as transfer_view
 from cinder.api import xmlutil
-
 from cinder import exception
-from cinder.openstack.common.gettextutils import _
+from cinder.i18n import _
 from cinder.openstack.common import log as logging
 from cinder import transfer as transferAPI
 from cinder import utils

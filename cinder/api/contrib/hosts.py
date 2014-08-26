@@ -15,17 +15,17 @@
 
 """The hosts admin extension."""
 
+from xml.parsers import expat
 
 from oslo.config import cfg
 import webob.exc
-from xml.parsers import expat
 
 from cinder.api import extensions
 from cinder.api.openstack import wsgi
 from cinder.api import xmlutil
 from cinder import db
 from cinder import exception
-from cinder.openstack.common.gettextutils import _
+from cinder.i18n import _
 from cinder.openstack.common import log as logging
 from cinder.openstack.common import timeutils
 from cinder import utils
