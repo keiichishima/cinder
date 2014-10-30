@@ -25,6 +25,7 @@ from oslo.config import cfg
 from cinder import context
 from cinder import exception
 from cinder.image import image_utils
+from cinder.openstack.common import fileutils
 from cinder.openstack.common import processutils
 from cinder.openstack.common import units
 from cinder import test
@@ -70,11 +71,12 @@ class TestUtils(test.TestCase):
         TEST_IMG_SIZE_IN_GB = 1
 
         utils.execute('qemu-img', 'resize', TEST_IMG_SOURCE,
-                      '%sG' % TEST_IMG_SIZE_IN_GB, run_as_root=False)
+                      '%sG' % TEST_IMG_SIZE_IN_GB, run_as_root=True)
 
         mox.ReplayAll()
 
-        image_utils.resize_image(TEST_IMG_SOURCE, TEST_IMG_SIZE_IN_GB)
+        image_utils.resize_image(TEST_IMG_SOURCE, TEST_IMG_SIZE_IN_GB,
+                                 run_as_root=True)
 
         mox.VerifyAll()
 
@@ -83,17 +85,24 @@ class TestUtils(test.TestCase):
 
         mox = self._mox
         mox.StubOutWithMock(utils, 'execute')
+        mox.StubOutWithMock(utils, 'is_blk_device')
 
         TEST_OUT_FORMAT = 'vmdk'
         TEST_SOURCE = 'img/qemu.img'
         TEST_DEST = '/img/vmware.vmdk'
 
-        utils.execute('qemu-img', 'convert', '-O', TEST_OUT_FORMAT,
-                      TEST_SOURCE, TEST_DEST, run_as_root=True)
+        utils.is_blk_device(TEST_DEST).AndReturn(True)
+        utils.execute('dd', 'count=0', 'if=img/qemu.img',
+                      'of=/img/vmware.vmdk', 'oflag=direct',
+                      run_as_root=True)
+        utils.execute(
+            'qemu-img', 'convert', '-t', 'none', '-O', TEST_OUT_FORMAT,
+            TEST_SOURCE, TEST_DEST, run_as_root=True)
 
         mox.ReplayAll()
 
-        image_utils.convert_image(TEST_SOURCE, TEST_DEST, TEST_OUT_FORMAT)
+        image_utils.convert_image(TEST_SOURCE, TEST_DEST, TEST_OUT_FORMAT,
+                                  run_as_root=True)
 
         mox.VerifyAll()
 
@@ -128,7 +137,7 @@ class TestUtils(test.TestCase):
 
         mox.ReplayAll()
 
-        inf = image_utils.qemu_img_info(TEST_PATH)
+        inf = image_utils.qemu_img_info(TEST_PATH, run_as_root=True)
 
         self.assertEqual(inf.image, 'qemu.qcow2')
         self.assertEqual(inf.backing_file, 'qemu.qcow2')
@@ -180,7 +189,7 @@ class TestUtils(test.TestCase):
 
         mox.ReplayAll()
 
-        inf = image_utils.qemu_img_info(TEST_PATH)
+        inf = image_utils.qemu_img_info(TEST_PATH, run_as_root=True)
 
         self.assertEqual(inf.image, 'qemu.qcow2')
         self.assertEqual(inf.backing_file, 'qemu.qcow2')
@@ -205,12 +214,14 @@ class TestUtils(test.TestCase):
         mox.StubOutWithMock(utils, 'execute')
         mox.StubOutWithMock(image_utils, 'fetch')
         mox.StubOutWithMock(volume_utils, 'setup_blkio_cgroup')
+        mox.StubOutWithMock(utils, 'is_blk_device')
 
         TEST_INFO = ("image: qemu.qcow2\n"
                      "file format: raw\n"
                      "virtual size: 0 (0 bytes)\n"
                      "disk size: 0")
 
+        utils.is_blk_device(self.TEST_DEV_PATH).AndReturn(True)
         CONF.set_override('volume_copy_bps_limit', bps_limit)
 
         image_utils.create_temporary_file().AndReturn(self.TEST_DEV_PATH)
@@ -235,11 +246,15 @@ class TestUtils(test.TestCase):
         if has_qemu and dest_inf:
             if bps_limit:
                 prefix = ('cgexec', '-g', 'blkio:test')
-                postfix = ('-t', 'none')
             else:
-                prefix = postfix = ()
-            cmd = prefix + ('qemu-img', 'convert', '-O', 'raw',
-                            self.TEST_DEV_PATH, self.TEST_DEV_PATH) + postfix
+                prefix = ()
+
+            utils.execute('dd', 'count=0', 'if=/dev/ether/fake_dev',
+                          'of=/dev/ether/fake_dev', 'oflag=direct',
+                          run_as_root=True)
+
+            cmd = prefix + ('qemu-img', 'convert', '-t', 'none', '-O', 'raw',
+                            self.TEST_DEV_PATH, self.TEST_DEV_PATH)
 
             volume_utils.setup_blkio_cgroup(
                 self.TEST_DEV_PATH, self.TEST_DEV_PATH,
@@ -272,7 +287,7 @@ class TestUtils(test.TestCase):
 
         image_utils.fetch_to_raw(context, self._image_service,
                                  self.TEST_IMAGE_ID, self.TEST_DEV_PATH,
-                                 mox.IgnoreArg())
+                                 mox.IgnoreArg(), run_as_root=True)
         self._mox.VerifyAll()
 
     @mock.patch('os.stat')
@@ -305,8 +320,6 @@ class TestUtils(test.TestCase):
                           self.TEST_IMAGE_ID, self.TEST_DEV_PATH,
                           mox.IgnoreArg())
 
-        self._mox.VerifyAll()
-
     def test_fetch_to_raw_on_error_parsing_failed(self):
         SRC_INFO_NO_FORMAT = ("image: qemu.qcow2\n"
                               "virtual_size: 50M (52428800 bytes)\n"
@@ -320,7 +333,6 @@ class TestUtils(test.TestCase):
                           context, self._image_service,
                           self.TEST_IMAGE_ID, self.TEST_DEV_PATH,
                           mox.IgnoreArg())
-        self._mox.VerifyAll()
 
     def test_fetch_to_raw_on_error_backing_file(self):
         SRC_INFO_BACKING_FILE = ("image: qemu.qcow2\n"
@@ -337,7 +349,6 @@ class TestUtils(test.TestCase):
                           context, self._image_service,
                           self.TEST_IMAGE_ID, self.TEST_DEV_PATH,
                           mox.IgnoreArg())
-        self._mox.VerifyAll()
 
     @mock.patch('os.stat')
     def test_fetch_to_raw_on_error_not_convert_to_raw(self, mock_stat):
@@ -440,11 +451,11 @@ class TestUtils(test.TestCase):
         if bps_limit:
             CONF.set_override('volume_copy_bps_limit', bps_limit)
             prefix = ('cgexec', '-g', 'blkio:test')
-            postfix = ('-t', 'none')
         else:
-            prefix = postfix = ()
+            prefix = ()
+
         cmd = prefix + ('qemu-img', 'convert', '-O', 'qcow2',
-                        mox.IgnoreArg(), mox.IgnoreArg()) + postfix
+                        mox.IgnoreArg(), mox.IgnoreArg())
 
         m = self._mox
         m.StubOutWithMock(utils, 'execute')
@@ -452,6 +463,7 @@ class TestUtils(test.TestCase):
 
         volume_utils.setup_blkio_cgroup(mox.IgnoreArg(), mox.IgnoreArg(),
                                         bps_limit).AndReturn(prefix)
+
         utils.execute(*cmd, run_as_root=True)
         utils.execute(
             'env', 'LC_ALL=C', 'qemu-img', 'info',
@@ -466,8 +478,37 @@ class TestUtils(test.TestCase):
 
     @mock.patch('os.stat')
     def test_upload_volume_with_bps_limit(self, mock_stat):
+        bps_limit = 1048576
+        image_meta = {'id': 1, 'disk_format': 'qcow2'}
+        TEST_RET = "image: qemu.qcow2\n"\
+                   "file_format: qcow2 \n"\
+                   "virtual_size: 50M (52428800 bytes)\n"\
+                   "cluster_size: 65536\n"\
+                   "disk_size: 196K (200704 bytes)"
 
-        self.test_upload_volume(bps_limit=1048576)
+        CONF.set_override('volume_copy_bps_limit', bps_limit)
+        prefix = ('cgexec', '-g', 'blkio:test')
+
+        cmd = prefix + ('qemu-img', 'convert', '-O', 'qcow2',
+                        mox.IgnoreArg(), mox.IgnoreArg())
+
+        m = self._mox
+        m.StubOutWithMock(utils, 'execute')
+        m.StubOutWithMock(volume_utils, 'setup_blkio_cgroup')
+        m.StubOutWithMock(volume_utils, 'check_for_odirect_support')
+
+        volume_utils.setup_blkio_cgroup(mox.IgnoreArg(), mox.IgnoreArg(),
+                                        bps_limit).AndReturn(prefix)
+        utils.execute(*cmd, run_as_root=True)
+        utils.execute(
+            'env', 'LC_ALL=C', 'qemu-img', 'info',
+            mox.IgnoreArg(), run_as_root=True).AndReturn(
+                (TEST_RET, 'ignored'))
+
+        m.ReplayAll()
+        image_utils.upload_volume(context, FakeImageService(),
+                                  image_meta, '/dev/loop1')
+        m.VerifyAll()
 
     def test_upload_volume_with_raw_image(self):
         image_meta = {'id': 1, 'disk_format': 'raw'}
@@ -493,6 +534,7 @@ class TestUtils(test.TestCase):
 
         m = self._mox
         m.StubOutWithMock(utils, 'execute')
+        m.StubOutWithMock(volume_utils, 'check_for_odirect_support')
 
         utils.execute('qemu-img', 'convert', '-O', 'qcow2',
                       mox.IgnoreArg(), mox.IgnoreArg(), run_as_root=True)
@@ -621,10 +663,10 @@ class TestTemporaryFile(test.TestCase):
     def test_file_unlinked(self):
         mox = self.mox
         mox.StubOutWithMock(image_utils, 'create_temporary_file')
-        mox.StubOutWithMock(image_utils.os, 'unlink')
+        mox.StubOutWithMock(fileutils, 'delete_if_exists')
 
         image_utils.create_temporary_file().AndReturn('somefile')
-        image_utils.os.unlink('somefile')
+        fileutils.delete_if_exists('somefile')
 
         mox.ReplayAll()
 
@@ -634,10 +676,10 @@ class TestTemporaryFile(test.TestCase):
     def test_file_unlinked_on_error(self):
         mox = self.mox
         mox.StubOutWithMock(image_utils, 'create_temporary_file')
-        mox.StubOutWithMock(image_utils.os, 'unlink')
+        mox.StubOutWithMock(fileutils, 'delete_if_exists')
 
         image_utils.create_temporary_file().AndReturn('somefile')
-        image_utils.os.unlink('somefile')
+        fileutils.delete_if_exists('somefile')
 
         mox.ReplayAll()
 
@@ -706,6 +748,7 @@ class TestXenServerImageToCoalescedVhd(test.TestCase):
         mox.StubOutWithMock(image_utils, 'fix_vhd_chain')
         mox.StubOutWithMock(image_utils, 'coalesce_chain')
         mox.StubOutWithMock(image_utils.os, 'unlink')
+        mox.StubOutWithMock(fileutils, 'delete_if_exists')
         mox.StubOutWithMock(image_utils, 'rename_file')
 
         image_utils.temporary_dir().AndReturn(fake_context('somedir'))
@@ -715,7 +758,7 @@ class TestXenServerImageToCoalescedVhd(test.TestCase):
         image_utils.fix_vhd_chain(['somedir/0.vhd', 'somedir/1.vhd'])
         image_utils.coalesce_chain(
             ['somedir/0.vhd', 'somedir/1.vhd']).AndReturn('somedir/1.vhd')
-        image_utils.os.unlink('image')
+        fileutils.delete_if_exists('image')
         image_utils.rename_file('somedir/1.vhd', 'image')
 
         mox.ReplayAll()

@@ -53,7 +53,7 @@ LOG = logging.getLogger(__name__)
 class SchedulerManager(manager.Manager):
     """Chooses a host to create volumes."""
 
-    RPC_API_VERSION = '1.5'
+    RPC_API_VERSION = '1.7'
 
     target = messaging.Target(version=RPC_API_VERSION)
 
@@ -86,6 +86,30 @@ class SchedulerManager(manager.Manager):
         self.driver.update_service_capabilities(service_name,
                                                 host,
                                                 capabilities)
+
+    def create_consistencygroup(self, context, topic,
+                                group_id,
+                                request_spec_list=None,
+                                filter_properties_list=None):
+        try:
+            self.driver.schedule_create_consistencygroup(
+                context, group_id,
+                request_spec_list,
+                filter_properties_list)
+        except exception.NoValidHost:
+            msg = (_("Could not find a host for consistency group "
+                     "%(group_id)s.") %
+                   {'group_id': group_id})
+            LOG.error(msg)
+            db.consistencygroup_update(context, group_id,
+                                       {'status': 'error'})
+        except Exception:
+            with excutils.save_and_reraise_exception():
+                LOG.exception(_("Failed to create consistency group "
+                                "%(group_id)s."),
+                              {'group_id': group_id})
+                db.consistencygroup_update(context, group_id,
+                                           {'status': 'error'})
 
     def create_volume(self, context, topic, volume_id, snapshot_id=None,
                       image_id=None, request_spec=None,
@@ -215,6 +239,10 @@ class SchedulerManager(manager.Manager):
         else:
             volume_rpcapi.VolumeAPI().manage_existing(context, volume_ref,
                                                       request_spec.get('ref'))
+
+    def get_pools(self, context, filters=None):
+        """Get active pools from scheduler's cache."""
+        return self.driver.get_pools(context, filters)
 
     def _set_volume_state_and_notify(self, method, updates, context, ex,
                                      request_spec, msg=None):

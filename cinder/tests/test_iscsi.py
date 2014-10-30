@@ -18,6 +18,8 @@ import shutil
 import string
 import tempfile
 
+from oslo.config import cfg
+
 from cinder.brick.iscsi import iscsi
 from cinder import test
 from cinder.volume import driver
@@ -34,6 +36,10 @@ class TargetAdminTestCase(object):
         self.path = '/foo'
         self.vol_id = 'blaa'
         self.vol_name = 'volume-blaa'
+        self.portal = 'portal:3260,1'
+        self.initiator = 'iqn.1994-05.org.foo.bar:test'
+        self.chap_username = 'test_id'
+        self.chap_password = 'test_pass'
         self.write_cache = 'off'
         self.db = {}
 
@@ -48,7 +54,6 @@ class TargetAdminTestCase(object):
         self.driver = driver.ISCSIDriver()
         self.stubs.Set(iscsi.TgtAdm, '_verify_backing_lun',
                        self.fake_verify_backing_lun)
-        self.driver = driver.ISCSIDriver()
         self.flags(iscsi_target_prefix='iqn.2011-09.org.foo.bar:')
         self.persist_tempdir = tempfile.mkdtemp()
         self.addCleanup(self._cleanup, self.persist_tempdir)
@@ -66,7 +71,10 @@ class TargetAdminTestCase(object):
         return {'tid': self.tid,
                 'target_name': self.target_name,
                 'lun': self.lun,
-                'path': self.path}
+                'path': self.path,
+                'initiator': self.initiator,
+                'username': self.chap_username,
+                'password': self.chap_password}
 
     def get_script(self):
         return self.script_template % self.get_script_params()
@@ -78,10 +86,14 @@ class TargetAdminTestCase(object):
     def clear_cmds(self):
         self.cmds = []
 
+    def verify_config(self):
+        pass
+
     def verify_cmds(self, cmds):
         self.assertEqual(len(cmds), len(self.cmds))
         for cmd in self.cmds:
             self.assertTrue(cmd in cmds)
+        self.verify_config()
 
     def verify(self):
         script = self.get_script()
@@ -95,10 +107,22 @@ class TargetAdminTestCase(object):
     def run_commands(self):
         target_helper = self.driver.get_target_helper(self.db)
         target_helper.set_execute(self.fake_execute)
+        chap_auth = target_helper._iscsi_authentication('IncomingUser',
+                                                        self.chap_username,
+                                                        self.chap_password)
         target_helper.create_iscsi_target(self.target_name, self.tid,
-                                          self.lun, self.path,
+                                          self.lun, self.path, chap_auth,
                                           write_cache=self.write_cache)
         target_helper.show_target(self.tid, iqn=self.target_name)
+        if cfg.CONF.iscsi_helper == 'lioadm':
+            volume = {'provider_location': ' '.join([self.portal,
+                                                     self.target_name]),
+                      'provider_auth': ' '.join(['CHAP',
+                                                 self.chap_username,
+                                                 self.chap_password])}
+            connector = {'initiator': self.initiator}
+            target_helper.initialize_connection(volume, connector)
+            target_helper.terminate_connection(volume, connector)
         target_helper.remove_iscsi_target(self.tid, self.lun, self.vol_id,
                                           self.vol_name)
 
@@ -128,6 +152,11 @@ class TgtAdmTestCase(test.TestCase, TargetAdminTestCase):
             '--delete %(target_name)s',
             'tgtadm --lld iscsi --op show --mode target'])
 
+    def verify_config(self):
+        target_helper = self.driver.get_target_helper(self.db)
+        self.assertEqual(target_helper._get_target_chap_auth(self.target_name),
+                         (self.chap_username, self.chap_password))
+
 
 class IetAdmTestCase(test.TestCase, TargetAdminTestCase):
 
@@ -139,6 +168,8 @@ class IetAdmTestCase(test.TestCase, TargetAdminTestCase):
             'ietadm --op new --tid=%(tid)s --params Name=%(target_name)s',
             'ietadm --op new --tid=%(tid)s --lun=%(lun)s '
             '--params Path=%(path)s,Type=fileio',
+            'ietadm --op new --tid=%(tid)s --user '
+            '--params=IncomingUser=%(username)s,Password=%(password)s',
             'ietadm --op show --tid=%(tid)s',
             'ietadm --op delete --tid=%(tid)s --lun=%(lun)s',
             'ietadm --op delete --tid=%(tid)s'])
@@ -155,6 +186,8 @@ class IetAdmBlockIOTestCase(test.TestCase, TargetAdminTestCase):
             'ietadm --op new --tid=%(tid)s --params Name=%(target_name)s',
             'ietadm --op new --tid=%(tid)s --lun=%(lun)s '
             '--params Path=%(path)s,Type=blockio',
+            'ietadm --op new --tid=%(tid)s --user '
+            '--params=IncomingUser=%(username)s,Password=%(password)s',
             'ietadm --op show --tid=%(tid)s',
             'ietadm --op delete --tid=%(tid)s --lun=%(lun)s',
             'ietadm --op delete --tid=%(tid)s'])
@@ -171,6 +204,8 @@ class IetAdmFileIOTestCase(test.TestCase, TargetAdminTestCase):
             'ietadm --op new --tid=%(tid)s --params Name=%(target_name)s',
             'ietadm --op new --tid=%(tid)s --lun=%(lun)s '
             '--params Path=%(path)s,Type=fileio',
+            'ietadm --op new --tid=%(tid)s --user '
+            '--params=IncomingUser=%(username)s,Password=%(password)s',
             'ietadm --op show --tid=%(tid)s',
             'ietadm --op delete --tid=%(tid)s --lun=%(lun)s',
             'ietadm --op delete --tid=%(tid)s'])
@@ -188,6 +223,8 @@ class IetAdmAutoIOTestCase(test.TestCase, TargetAdminTestCase):
             'ietadm --op new --tid=%(tid)s --params Name=%(target_name)s',
             'ietadm --op new --tid=%(tid)s --lun=%(lun)s '
             '--params Path=%(path)s,Type=blockio',
+            'ietadm --op new --tid=%(tid)s --user '
+            '--params=IncomingUser=%(username)s,Password=%(password)s',
             'ietadm --op show --tid=%(tid)s',
             'ietadm --op delete --tid=%(tid)s --lun=%(lun)s',
             'ietadm --op delete --tid=%(tid)s'])
@@ -201,7 +238,10 @@ class LioAdmTestCase(test.TestCase, TargetAdminTestCase):
         self.flags(iscsi_helper='lioadm')
         self.script_template = "\n".join([
             'cinder-rtstool create '
-            '%(path)s %(target_name)s test_id test_pass',
+            '%(path)s %(target_name)s %(username)s %(password)s',
+            'cinder-rtstool add-initiator '
+            '%(target_name)s %(username)s %(password)s %(initiator)s',
+            'cinder-rtstool delete-initiator %(target_name)s %(initiator)s',
             'cinder-rtstool delete %(target_name)s'])
 
 

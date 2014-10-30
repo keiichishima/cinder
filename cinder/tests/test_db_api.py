@@ -380,6 +380,21 @@ class DBAPIVolumeTestCase(BaseTest):
                                             db.volume_get_all_by_host(
                                             self.ctxt, 'h%d' % i))
 
+    def test_volume_get_all_by_host_with_pools(self):
+        volumes = []
+        vol_on_host_wo_pool = [db.volume_create(self.ctxt, {'host': 'foo'})
+                               for j in xrange(3)]
+        vol_on_host_w_pool = [db.volume_create(
+            self.ctxt, {'host': 'foo#pool0'})]
+        volumes.append((vol_on_host_wo_pool +
+                        vol_on_host_w_pool))
+        # insert an additional record that doesn't belongs to the same
+        # host as 'foo' and test if it is included in the result
+        db.volume_create(self.ctxt, {'host': 'foobar'})
+        self._assertEqualListsOfObjects(volumes[0],
+                                        db.volume_get_all_by_host(
+                                        self.ctxt, 'foo'))
+
     def test_volume_get_all_by_project(self):
         volumes = []
         for i in xrange(3):
@@ -1219,6 +1234,19 @@ class DBAPIBackupTestCase(BaseTest):
         update_id = self.created[1]['id']
         updated_backup = db.backup_update(self.ctxt, update_id,
                                           updated_values)
+        self._assertEqualObjects(updated_values, updated_backup,
+                                 self._ignored_keys)
+
+    def test_backup_update_with_fail_reason_truncation(self):
+        updated_values = self._get_values(one=True)
+        fail_reason = '0' * 512
+        updated_values['fail_reason'] = fail_reason
+
+        update_id = self.created[1]['id']
+        updated_backup = db.backup_update(self.ctxt, update_id,
+                                          updated_values)
+
+        updated_values['fail_reason'] = fail_reason[:255]
         self._assertEqualObjects(updated_values, updated_backup,
                                  self._ignored_keys)
 

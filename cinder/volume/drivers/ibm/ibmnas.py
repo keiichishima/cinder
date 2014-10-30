@@ -42,7 +42,7 @@ from cinder.openstack.common import processutils
 from cinder.openstack.common import units
 from cinder import utils
 from cinder.volume.drivers import nfs
-from cinder.volume.drivers.nfs import nas_opts
+from cinder.volume.drivers.remotefs import nas_opts
 from cinder.volume.drivers.san import san
 
 VERSION = '1.1.0'
@@ -343,7 +343,7 @@ class IBMNAS_NFSDriver(nfs.NfsDriver, san.SanDriver):
 
         volume['provider_location'] = self._find_share(volume['size'])
         volume_path = self.local_path(volume)
-        self._set_rw_permissions_for_all(volume_path)
+        self._set_rw_permissions_for_owner(volume_path)
 
         # Extend the volume if required
         self._resize_volume_file(volume_path, volume['size'])
@@ -365,8 +365,7 @@ class IBMNAS_NFSDriver(nfs.NfsDriver, san.SanDriver):
 
         volume['provider_location'] = self._find_share(volume['size'])
         volume_path = self.local_path(volume)
-
-        self._set_rw_permissions_for_all(volume_path)
+        self._set_rw_permissions_for_owner(volume_path)
 
         # Extend the volume if required
         self._resize_volume_file(volume_path, volume['size'])

@@ -119,6 +119,14 @@ volume_opts = [
                     'perform write-back(on) or write-through(off). '
                     'This parameter is valid if iscsi_helper is set '
                     'to tgtadm or iseradm.'),
+    cfg.StrOpt('driver_client_cert_key',
+               default=None,
+               help='The path to the client certificate key for verification, '
+                    'if the driver supports it.'),
+    cfg.StrOpt('driver_client_cert',
+               default=None,
+               help='The path to the client certificate for verification, '
+                    'if the driver supports it.'),
 ]
 
 # for backward compatibility
@@ -165,13 +173,13 @@ class VolumeDriver(object):
        intended that these drivers ONLY implement Control Path
        details (create, delete, extend...), while transport or
        data path related implementation should be a *member object*
-       that we call a target.  The point here is that for example
+       that we call a connector.  The point here is that for example
        don't allow the LVM driver to implement iSCSI methods, instead
-       call whatever connector it has configued via conf file
+       call whatever connector it has configured via conf file
        (iSCSI{LIO, TGT, IET}, FC, etc).
 
        In the base class and for example the LVM driver we do this via a has-a
-       relationship and just provide an interface to the specific target
+       relationship and just provide an interface to the specific connector
        methods.  How you do this in your own driver is of course up to you.
     """
 
@@ -188,6 +196,8 @@ class VolumeDriver(object):
             self.configuration.append_config_values(iser_opts)
         self.set_execute(execute)
         self._stats = {}
+
+        self.pools = []
 
         # set True by manager after successful check_for_setup
         self._initialized = False
@@ -496,7 +506,10 @@ class VolumeDriver(object):
         device = connector.connect_volume(conn['data'])
         host_device = device['path']
 
-        if not connector.check_valid_device(host_device):
+        # Secure network file systems will NOT run as root.
+        root_access = not self.secure_file_operations_enabled()
+
+        if not connector.check_valid_device(host_device, root_access):
             raise exception.DeviceUnavailable(path=host_device,
                                               reason=(_("Unable to access "
                                                         "the backend storage "
@@ -538,9 +551,15 @@ class VolumeDriver(object):
 
         try:
             volume_path = attach_info['device']['path']
-            with utils.temporary_chown(volume_path):
+
+            # Secure network file systems will not chown files.
+            if self.secure_file_operations_enabled():
                 with fileutils.file_open(volume_path) as volume_file:
                     backup_service.backup(backup, volume_file)
+            else:
+                with utils.temporary_chown(volume_path):
+                    with fileutils.file_open(volume_path) as volume_file:
+                        backup_service.backup(backup, volume_file)
 
         finally:
             self._detach_volume(context, attach_info, volume, properties)
@@ -557,9 +576,16 @@ class VolumeDriver(object):
 
         try:
             volume_path = attach_info['device']['path']
-            with utils.temporary_chown(volume_path):
+
+            # Secure network file systems will not chown files.
+            if self.secure_file_operations_enabled():
                 with fileutils.file_open(volume_path, 'wb') as volume_file:
                     backup_service.restore(backup, volume['id'], volume_file)
+            else:
+                with utils.temporary_chown(volume_path):
+                    with fileutils.file_open(volume_path, 'wb') as volume_file:
+                        backup_service.restore(backup, volume['id'],
+                                               volume_file)
 
         finally:
             self._detach_volume(context, attach_info, volume, properties)
@@ -794,6 +820,49 @@ class VolumeDriver(object):
     def terminate_connection(self, volume, connector, **kwargs):
         """Disallow connection from connector"""
 
+    def create_consistencygroup(self, context, group):
+        """Creates a consistencygroup."""
+        raise NotImplementedError()
+
+    def delete_consistencygroup(self, context, group):
+        """Deletes a consistency group."""
+        raise NotImplementedError()
+
+    def create_cgsnapshot(self, context, cgsnapshot):
+        """Creates a cgsnapshot."""
+        raise NotImplementedError()
+
+    def delete_cgsnapshot(self, context, cgsnapshot):
+        """Deletes a cgsnapshot."""
+        raise NotImplementedError()
+
+    def get_pool(self, volume):
+        """Return pool name where volume reside on.
+
+        :param volume: The volume hosted by the the driver.
+        :return: name of the pool where given volume is in.
+        """
+        return None
+
+    def secure_file_operations_enabled(self):
+        """Determine if driver is running in Secure File Operations mode.
+
+        The Cinder Volume driver needs to query if this driver is running
+        in a secure file operations mode. By default, it is False: any driver
+        that does support secure file operations should override this method.
+        """
+        return False
+
+    def update_migrated_volume(self, ctxt, volume, new_volume):
+        """Return model update for migrated volume.
+
+        :param volume: The original volume that was migrated to this backend
+        :param new_volume: The migration volume object that was created on
+                           this backend as part of the migration process
+        :return model_update to update DB with any needed changes
+        """
+        return None
+
 
 class ISCSIDriver(VolumeDriver):
     """Executes commands relating to ISCSI volumes.
@@ -987,7 +1056,8 @@ class ISCSIDriver(VolumeDriver):
             raise exception.VolumeBackendAPIException(data=err_msg)
 
     def terminate_connection(self, volume, connector, **kwargs):
-        pass
+        if CONF.iscsi_helper == 'lioadm':
+            self.target_helper.terminate_connection(volume, connector)
 
     def get_volume_stats(self, refresh=False):
         """Get volume stats.
@@ -1009,11 +1079,30 @@ class ISCSIDriver(VolumeDriver):
         data["vendor_name"] = 'Open Source'
         data["driver_version"] = '1.0'
         data["storage_protocol"] = 'iSCSI'
+        data["pools"] = []
 
-        data['total_capacity_gb'] = 'infinite'
-        data['free_capacity_gb'] = 'infinite'
-        data['reserved_percentage'] = 100
-        data['QoS_support'] = False
+        if self.pools:
+            for pool in self.pools:
+                new_pool = {}
+                new_pool.update(dict(
+                    pool_name=pool,
+                    total_capacity_gb=0,
+                    free_capacity_gb=0,
+                    reserved_percentage=100,
+                    QoS_support=False
+                ))
+                data["pools"].append(new_pool)
+        else:
+            # No pool configured, the whole backend will be treated as a pool
+            single_pool = {}
+            single_pool.update(dict(
+                pool_name=data["volume_backend_name"],
+                total_capacity_gb=0,
+                free_capacity_gb=0,
+                reserved_percentage=100,
+                QoS_support=False
+            ))
+            data["pools"].append(single_pool)
         self._stats = data
 
     def get_target_helper(self, db):
@@ -1167,11 +1256,30 @@ class ISERDriver(ISCSIDriver):
         data["vendor_name"] = 'Open Source'
         data["driver_version"] = '1.0'
         data["storage_protocol"] = 'iSER'
+        data["pools"] = []
 
-        data['total_capacity_gb'] = 'infinite'
-        data['free_capacity_gb'] = 'infinite'
-        data['reserved_percentage'] = 100
-        data['QoS_support'] = False
+        if self.pools:
+            for pool in self.pools:
+                new_pool = {}
+                new_pool.update(dict(
+                    pool_name=pool,
+                    total_capacity_gb=0,
+                    free_capacity_gb=0,
+                    reserved_percentage=100,
+                    QoS_support=False
+                ))
+                data["pools"].append(new_pool)
+        else:
+            # No pool configured, the whole backend will be treated as a pool
+            single_pool = {}
+            single_pool.update(dict(
+                pool_name=data["volume_backend_name"],
+                total_capacity_gb=0,
+                free_capacity_gb=0,
+                reserved_percentage=100,
+                QoS_support=False
+            ))
+            data["pools"].append(single_pool)
         self._stats = data
 
     def get_target_helper(self, db):

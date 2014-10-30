@@ -73,9 +73,9 @@ gpfs_opts = [
                       'volume is created as a fully allocated file, in which '
                       'case, creation may take a significantly longer time.')),
     cfg.StrOpt('gpfs_storage_pool',
-               default=None,
+               default='system',
                help=('Specifies the storage pool that volumes are assigned '
-                     'to.  By default, the system storage pool is used.')),
+                     'to. By default, the system storage pool is used.')),
 ]
 CONF = cfg.CONF
 CONF.register_opts(gpfs_opts)
@@ -333,7 +333,7 @@ class GPFSDriver(driver.VolumeDriver):
             raise exception.VolumeBackendAPIException(data=msg)
 
         pool = self.configuration.safe_get('gpfs_storage_pool')
-        self._storage_pool = pool or 'system'
+        self._storage_pool = pool
         if not self._verify_gpfs_pool(self._storage_pool):
             msg = (_('Invalid storage pool %s specificed.') %
                    self._storage_pool)
@@ -739,9 +739,6 @@ class GPFSDriver(driver.VolumeDriver):
             return (None, False)
 
         vol_path = self.local_path(volume)
-        # if the image is not already a GPFS snap file make it so
-        if not self._is_gpfs_parent_file(image_path):
-            self._create_gpfs_snap(image_path)
 
         data = image_utils.qemu_img_info(image_path)
 
@@ -752,6 +749,10 @@ class GPFSDriver(driver.VolumeDriver):
                     'copy_on_write'):
                 LOG.debug('Clone image to vol %s using mmclone.' %
                           volume['id'])
+                # if the image is not already a GPFS snap file make it so
+                if not self._is_gpfs_parent_file(image_path):
+                    self._create_gpfs_snap(image_path)
+
                 self._create_gpfs_copy(image_path, vol_path)
             elif self.configuration.gpfs_images_share_mode == 'copy':
                 LOG.debug('Clone image to vol %s using copyfile.' %

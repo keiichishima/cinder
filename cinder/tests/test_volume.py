@@ -69,6 +69,7 @@ from cinder.volume import volume_types
 
 
 QUOTAS = quota.QUOTAS
+CGQUOTAS = quota.CGQUOTAS
 
 CONF = cfg.CONF
 
@@ -122,7 +123,8 @@ class BaseVolumeTestCase(test.TestCase):
         self.stubs.Set(brick_lvm.LVM, '_vg_exists', lambda x: True)
         self.stubs.Set(os.path, 'exists', lambda x: True)
         self.volume.driver.set_initialized()
-        self.volume.stats = {'allocated_capacity_gb': 0}
+        self.volume.stats = {'allocated_capacity_gb': 0,
+                             'pools': {}}
         # keep ordered record of what we execute
         self.called = []
 
@@ -254,6 +256,40 @@ class VolumeTestCase(BaseVolumeTestCase):
         self.volume.init_host()
         self.assertRaises(exception.VolumeNotFound, db.volume_get,
                           context.get_admin_context(), volume_id)
+
+    def test_init_host_count_allocated_capacity(self):
+        vol0 = tests_utils.create_volume(
+            self.context, size=100, host=CONF.host)
+        vol1 = tests_utils.create_volume(
+            self.context, size=128,
+            host=volutils.append_host(CONF.host, 'pool0'))
+        vol2 = tests_utils.create_volume(
+            self.context, size=256,
+            host=volutils.append_host(CONF.host, 'pool0'))
+        vol3 = tests_utils.create_volume(
+            self.context, size=512,
+            host=volutils.append_host(CONF.host, 'pool1'))
+        vol4 = tests_utils.create_volume(
+            self.context, size=1024,
+            host=volutils.append_host(CONF.host, 'pool2'))
+        self.volume.init_host()
+        stats = self.volume.stats
+        self.assertEqual(stats['allocated_capacity_gb'], 2020)
+        self.assertEqual(
+            stats['pools']['pool0']['allocated_capacity_gb'], 384)
+        self.assertEqual(
+            stats['pools']['pool1']['allocated_capacity_gb'], 512)
+        self.assertEqual(
+            stats['pools']['pool2']['allocated_capacity_gb'], 1024)
+
+        vol0 = db.volume_get(context.get_admin_context(), vol0['id'])
+        self.assertEqual(vol0['host'],
+                         volutils.append_host(CONF.host, 'LVM_iSCSI'))
+        self.volume.delete_volume(self.context, vol0['id'])
+        self.volume.delete_volume(self.context, vol1['id'])
+        self.volume.delete_volume(self.context, vol2['id'])
+        self.volume.delete_volume(self.context, vol3['id'])
+        self.volume.delete_volume(self.context, vol4['id'])
 
     @mock.patch.object(QUOTAS, 'reserve')
     @mock.patch.object(QUOTAS, 'commit')
@@ -577,6 +613,7 @@ class VolumeTestCase(BaseVolumeTestCase):
         with mock.patch.object(jsonutils, 'loads') as mock_loads:
             mock_loads.return_value = fake_capabilities
             manager = VolumeManager()
+            manager.stats = {'pools': {}}
             manager.driver.set_initialized()
             manager.publish_service_capabilities(self.context)
             self.assertTrue(mock_loads.called)
@@ -632,6 +669,68 @@ class VolumeTestCase(BaseVolumeTestCase):
                          volume_api.get(self.context, volume_id)['id'])
 
         self.volume.delete_volume(self.context, volume_id)
+
+    def test_get_all_limit_bad_value(self):
+        """Test value of 'limit' is numeric and >= 0"""
+        volume_api = cinder.volume.api.API()
+
+        self.assertRaises(exception.InvalidInput,
+                          volume_api.get_all,
+                          self.context,
+                          limit="A")
+        self.assertRaises(exception.InvalidInput,
+                          volume_api.get_all,
+                          self.context,
+                          limit="-1")
+
+    def test_get_all_tenants_value(self):
+        """Validate allowable values for --all_tenants
+
+           Note: type of the value could be String, Boolean, or Int
+        """
+        api = cinder.volume.api.API()
+
+        self.assertTrue(api._get_all_tenants_value({'all_tenants': True}))
+        self.assertTrue(api._get_all_tenants_value({'all_tenants': 1}))
+        self.assertFalse(api._get_all_tenants_value({'all_tenants': 'False'}))
+        self.assertFalse(api._get_all_tenants_value({'all_tenants': '0'}))
+        self.assertRaises(exception.InvalidInput,
+                          api._get_all_tenants_value,
+                          {'all_tenants': 'No'})
+        self.assertRaises(exception.InvalidInput,
+                          api._get_all_tenants_value,
+                          {'all_tenants': -1})
+
+    def test_get_all_tenants_volume_list(self):
+        """Validate when the volume list for all tenants is returned"""
+        volume_api = cinder.volume.api.API()
+
+        with mock.patch.object(volume_api.db,
+                               'volume_get_all_by_project') as by_project:
+            with mock.patch.object(volume_api.db,
+                                   'volume_get_all') as get_all:
+                fake_volume = {'volume_type_id': 'fake_type_id',
+                               'name': 'fake_name',
+                               'host': 'fake_host',
+                               'id': 'fake_volume_id'}
+
+                fake_volume_list = []
+                fake_volume_list.append([fake_volume])
+                by_project.return_value = fake_volume_list
+                get_all.return_value = fake_volume_list
+
+                volume_api.get_all(self.context, filters={'all_tenants': '0'})
+                self.assertTrue(by_project.called)
+                by_project.called = False
+
+                self.context.is_admin = False
+                volume_api.get_all(self.context, filters={'all_tenants': '1'})
+                self.assertTrue(by_project.called)
+
+                # check for volume list of all tenants
+                self.context.is_admin = True
+                volume_api.get_all(self.context, filters={'all_tenants': '1'})
+                self.assertTrue(get_all.called)
 
     def test_delete_volume_in_error_extending(self):
         """Test volume can be deleted in error_extending stats."""
@@ -821,6 +920,9 @@ class VolumeTestCase(BaseVolumeTestCase):
             return inner_sync2
         return inner_sync1
 
+    def _fake_execute(self, *cmd, **kwargs):
+        pass
+
     def test_create_volume_from_snapshot_check_locks(self):
         # mock the synchroniser so we can record events
         self.stubs.Set(utils, 'synchronized', self._mock_synchronized)
@@ -890,6 +992,7 @@ class VolumeTestCase(BaseVolumeTestCase):
     def test_create_volume_from_volume_check_locks(self):
         # mock the synchroniser so we can record events
         self.stubs.Set(utils, 'synchronized', self._mock_synchronized)
+        self.stubs.Set(utils, 'execute', self._fake_execute)
 
         orig_flow = engine.ActionEngine.run
 
@@ -1062,6 +1165,8 @@ class VolumeTestCase(BaseVolumeTestCase):
                                        'name',
                                        'description',
                                        volume_type=db_vol_type)
+
+        volume_src['host'] = 'fake_host'
         snapshot_ref = volume_api.create_snapshot_force(self.context,
                                                         volume_src,
                                                         'name',
@@ -1994,7 +2099,7 @@ class VolumeTestCase(BaseVolumeTestCase):
 
         self.volume.driver.delete_snapshot(
             mox.IgnoreArg()).AndRaise(
-                exception.SnapshotIsBusy(snapshot_name='fake'))
+            exception.SnapshotIsBusy(snapshot_name='fake'))
         self.mox.ReplayAll()
         self.volume.delete_snapshot(self.context, snapshot_id)
         snapshot_ref = db.snapshot_get(self.context, snapshot_id)
@@ -2024,7 +2129,7 @@ class VolumeTestCase(BaseVolumeTestCase):
 
         self.volume.driver.delete_snapshot(
             mox.IgnoreArg()).AndRaise(
-                exception.SnapshotIsBusy(snapshot_name='fake'))
+            exception.SnapshotIsBusy(snapshot_name='fake'))
         self.mox.ReplayAll()
         self.volume.delete_snapshot(self.context, snapshot_id)
         snapshot_ref = db.snapshot_get(self.context, snapshot_id)
@@ -2167,8 +2272,8 @@ class VolumeTestCase(BaseVolumeTestCase):
                         'container_format': 'bare',
                         'status': 'active'}
 
-        volume_api = cinder.volume.api.API(image_service=
-                                           _ModifiedFakeImageService())
+        volume_api = cinder.volume.api.API(
+            image_service=_ModifiedFakeImageService())
 
         self.assertRaises(exception.InvalidInput,
                           volume_api.create,
@@ -2185,8 +2290,8 @@ class VolumeTestCase(BaseVolumeTestCase):
                         'min_disk': 5,
                         'status': 'active'}
 
-        volume_api = cinder.volume.api.API(image_service=
-                                           _ModifiedFakeImageService())
+        volume_api = cinder.volume.api.API(
+            image_service=_ModifiedFakeImageService())
 
         self.assertRaises(exception.InvalidInput,
                           volume_api.create,
@@ -2203,8 +2308,8 @@ class VolumeTestCase(BaseVolumeTestCase):
                         'min_disk': 5,
                         'status': 'deleted'}
 
-        volume_api = cinder.volume.api.API(image_service=
-                                           _ModifiedFakeImageService())
+        volume_api = cinder.volume.api.API(
+            image_service=_ModifiedFakeImageService())
 
         self.assertRaises(exception.InvalidInput,
                           volume_api.create,
@@ -2261,6 +2366,26 @@ class VolumeTestCase(BaseVolumeTestCase):
                           volume_api.create,
                           self.context,
                           '2Gb',
+                          'name',
+                          'description')
+
+    def test_create_volume_with_float_fails(self):
+        """Test volume creation with invalid float size."""
+        volume_api = cinder.volume.api.API()
+        self.assertRaises(exception.InvalidInput,
+                          volume_api.create,
+                          self.context,
+                          '1.5',
+                          'name',
+                          'description')
+
+    def test_create_volume_with_zero_size_fails(self):
+        """Test volume creation with string size."""
+        volume_api = cinder.volume.api.API()
+        self.assertRaises(exception.InvalidInput,
+                          volume_api.create,
+                          self.context,
+                          '0',
                           'name',
                           'description')
 
@@ -2432,17 +2557,46 @@ class VolumeTestCase(BaseVolumeTestCase):
         # clean up
         self.volume.delete_volume(self.context, volume['id'])
 
+    def test_extend_volume_with_volume_type(self):
+        elevated = context.get_admin_context()
+        project_id = self.context.project_id
+        db.volume_type_create(elevated, {'name': 'type', 'extra_specs': {}})
+        vol_type = db.volume_type_get_by_name(elevated, 'type')
+
+        volume_api = cinder.volume.api.API()
+        volume = volume_api.create(self.context, 100, 'name', 'description',
+                                   volume_type=vol_type)
+        try:
+            usage = db.quota_usage_get(elevated, project_id, 'gigabytes_type')
+            volumes_in_use = usage.in_use
+        except exception.QuotaUsageNotFound:
+            volumes_in_use = 0
+        self.assertEqual(volumes_in_use, 100)
+        volume['status'] = 'available'
+        volume['host'] = 'fakehost'
+        volume['volume_type_id'] = vol_type.get('id')
+
+        volume_api.extend(self.context, volume, 200)
+
+        try:
+            usage = db.quota_usage_get(elevated, project_id, 'gigabytes_type')
+            volumes_reserved = usage.reserved
+        except exception.QuotaUsageNotFound:
+            volumes_reserved = 0
+
+        self.assertEqual(volumes_reserved, 100)
+
     def test_create_volume_from_unelevated_context(self):
         """Test context does't change after volume creation failure."""
         def fake_create_volume(*args, **kwargs):
             raise exception.CinderException('fake exception')
 
-        #create context for testing
+        # create context for testing
         ctxt = self.context.deepcopy()
         if 'admin' in ctxt.roles:
             ctxt.roles.remove('admin')
             ctxt.is_admin = False
-        #create one copy of context for future comparison
+        # create one copy of context for future comparison
         self.saved_ctxt = ctxt.deepcopy()
 
         self.stubs.Set(self.volume.driver, 'create_volume', fake_create_volume)
@@ -2461,10 +2615,10 @@ class VolumeTestCase(BaseVolumeTestCase):
         volume_src = tests_utils.create_volume(self.context,
                                                **self.volume_params)
         self.volume.create_volume(self.context, volume_src['id'])
-        volume_dst = tests_utils.create_volume(self.context,
-                                               source_replicaid=
-                                               volume_src['id'],
-                                               **self.volume_params)
+        volume_dst = tests_utils.create_volume(
+            self.context,
+            source_replicaid=volume_src['id'],
+            **self.volume_params)
         self.volume.create_volume(self.context, volume_dst['id'],
                                   source_replicaid=volume_src['id'])
         self.assertEqual('available',
@@ -2644,6 +2798,12 @@ class VolumeTestCase(BaseVolumeTestCase):
                        lambda x, y, z, remote='dest': True)
         self.stubs.Set(volume_rpcapi.VolumeAPI, 'delete_volume',
                        fake_delete_volume_rpc)
+        self.stubs.Set(volume_rpcapi.VolumeAPI,
+                       'update_migrated_volume',
+                       lambda *args: self.volume.update_migrated_volume(
+                           self.context,
+                           args[1],
+                           args[2]))
         error_logs = []
         LOG = logging.getLogger('cinder.volume.manager')
         self.stubs.Set(LOG, 'error', lambda x: error_logs.append(x))
@@ -2681,6 +2841,12 @@ class VolumeTestCase(BaseVolumeTestCase):
                        lambda *args: self.volume.attach_volume(args[1],
                                                                args[2]['id'],
                                                                *args[3:]))
+
+        self.stubs.Set(volume_rpcapi.VolumeAPI, 'update_migrated_volume',
+                       lambda *args: self.volume.update_migrated_volume(
+                           elevated,
+                           args[1],
+                           args[2]))
         self.stubs.Set(self.volume.driver, 'attach_volume',
                        lambda *args, **kwargs: None)
 
@@ -2892,6 +3058,268 @@ class VolumeTestCase(BaseVolumeTestCase):
 
         # clean up
         self.volume.delete_volume(self.context, volume['id'])
+
+    def test_create_delete_consistencygroup(self):
+        """Test consistencygroup can be created and deleted."""
+        # Need to stub out reserve, commit, and rollback
+        def fake_reserve(context, expire=None, project_id=None, **deltas):
+            return ["RESERVATION"]
+
+        def fake_commit(context, reservations, project_id=None):
+            pass
+
+        def fake_rollback(context, reservations, project_id=None):
+            pass
+
+        self.stubs.Set(CGQUOTAS, "reserve", fake_reserve)
+        self.stubs.Set(CGQUOTAS, "commit", fake_commit)
+        self.stubs.Set(CGQUOTAS, "rollback", fake_rollback)
+
+        rval = {'status': 'available'}
+        driver.VolumeDriver.create_consistencygroup = \
+            mock.Mock(return_value=rval)
+
+        rval = {'status': 'deleted'}, []
+        driver.VolumeDriver.delete_consistencygroup = \
+            mock.Mock(return_value=rval)
+
+        group = tests_utils.create_consistencygroup(
+            self.context,
+            availability_zone=CONF.storage_availability_zone,
+            volume_type='type1,type2')
+        group_id = group['id']
+        self.assertEqual(len(fake_notifier.NOTIFICATIONS), 0)
+        self.volume.create_consistencygroup(self.context, group_id)
+        self.assertEqual(len(fake_notifier.NOTIFICATIONS), 2)
+        msg = fake_notifier.NOTIFICATIONS[0]
+        self.assertEqual(msg['event_type'], 'consistencygroup.create.start')
+        expected = {
+            'status': 'available',
+            'name': 'test_cg',
+            'availability_zone': 'nova',
+            'tenant_id': 'fake',
+            'created_at': 'DONTCARE',
+            'user_id': 'fake',
+            'consistencygroup_id': group_id
+        }
+        self.assertDictMatch(msg['payload'], expected)
+        msg = fake_notifier.NOTIFICATIONS[1]
+        self.assertEqual(msg['event_type'], 'consistencygroup.create.end')
+        expected['status'] = 'available'
+        self.assertDictMatch(msg['payload'], expected)
+        self.assertEqual(
+            group_id,
+            db.consistencygroup_get(context.get_admin_context(),
+                                    group_id).id)
+
+        self.volume.delete_consistencygroup(self.context, group_id)
+        cg = db.consistencygroup_get(
+            context.get_admin_context(read_deleted='yes'),
+            group_id)
+        self.assertEqual(cg['status'], 'deleted')
+        self.assertEqual(len(fake_notifier.NOTIFICATIONS), 4)
+        msg = fake_notifier.NOTIFICATIONS[2]
+        self.assertEqual(msg['event_type'], 'consistencygroup.delete.start')
+        self.assertDictMatch(msg['payload'], expected)
+        msg = fake_notifier.NOTIFICATIONS[3]
+        self.assertEqual(msg['event_type'], 'consistencygroup.delete.end')
+        self.assertDictMatch(msg['payload'], expected)
+        self.assertRaises(exception.NotFound,
+                          db.consistencygroup_get,
+                          self.context,
+                          group_id)
+
+    @staticmethod
+    def _create_cgsnapshot(group_id, volume_id, size='0'):
+        """Create a cgsnapshot object."""
+        cgsnap = {}
+        cgsnap['user_id'] = 'fake'
+        cgsnap['project_id'] = 'fake'
+        cgsnap['consistencygroup_id'] = group_id
+        cgsnap['status'] = "creating"
+        cgsnapshot = db.cgsnapshot_create(context.get_admin_context(), cgsnap)
+
+        # Create a snapshot object
+        snap = {}
+        snap['volume_size'] = size
+        snap['user_id'] = 'fake'
+        snap['project_id'] = 'fake'
+        snap['volume_id'] = volume_id
+        snap['status'] = "available"
+        snap['cgsnapshot_id'] = cgsnapshot['id']
+        snapshot = db.snapshot_create(context.get_admin_context(), snap)
+
+        return cgsnapshot, snapshot
+
+    def test_create_delete_cgsnapshot(self):
+        """Test cgsnapshot can be created and deleted."""
+
+        rval = {'status': 'available'}
+        driver.VolumeDriver.create_consistencygroup = \
+            mock.Mock(return_value=rval)
+
+        rval = {'status': 'deleted'}, []
+        driver.VolumeDriver.delete_consistencygroup = \
+            mock.Mock(return_value=rval)
+
+        rval = {'status': 'available'}, []
+        driver.VolumeDriver.create_cgsnapshot = \
+            mock.Mock(return_value=rval)
+
+        rval = {'status': 'deleted'}, []
+        driver.VolumeDriver.delete_cgsnapshot = \
+            mock.Mock(return_value=rval)
+
+        group = tests_utils.create_consistencygroup(
+            self.context,
+            availability_zone=CONF.storage_availability_zone,
+            volume_type='type1,type2')
+        group_id = group['id']
+        volume = tests_utils.create_volume(
+            self.context,
+            consistencygroup_id=group_id,
+            **self.volume_params)
+        volume_id = volume['id']
+        self.volume.create_volume(self.context, volume_id)
+        cgsnapshot = tests_utils.create_cgsnapshot(
+            self.context,
+            consistencygroup_id=group_id)
+        cgsnapshot_id = cgsnapshot['id']
+        self.assertEqual(len(fake_notifier.NOTIFICATIONS), 2)
+        cgsnapshot_returns = self._create_cgsnapshot(group_id, volume_id)
+        cgsnapshot_id = cgsnapshot_returns[0]['id']
+        self.volume.create_cgsnapshot(self.context, group_id, cgsnapshot_id)
+        self.assertEqual(cgsnapshot_id,
+                         db.cgsnapshot_get(context.get_admin_context(),
+                                           cgsnapshot_id).id)
+        self.assertEqual(len(fake_notifier.NOTIFICATIONS), 6)
+        msg = fake_notifier.NOTIFICATIONS[2]
+        self.assertEqual(msg['event_type'], 'cgsnapshot.create.start')
+        expected = {
+            'created_at': 'DONTCARE',
+            'name': None,
+            'cgsnapshot_id': cgsnapshot_id,
+            'status': 'creating',
+            'tenant_id': 'fake',
+            'user_id': 'fake',
+            'consistencygroup_id': group_id
+        }
+        self.assertDictMatch(msg['payload'], expected)
+        msg = fake_notifier.NOTIFICATIONS[3]
+        self.assertEqual(msg['event_type'], 'snapshot.create.start')
+        msg = fake_notifier.NOTIFICATIONS[4]
+        self.assertEqual(msg['event_type'], 'cgsnapshot.create.end')
+        self.assertDictMatch(msg['payload'], expected)
+        msg = fake_notifier.NOTIFICATIONS[5]
+        self.assertEqual(msg['event_type'], 'snapshot.create.end')
+
+        self.volume.delete_cgsnapshot(self.context, cgsnapshot_id)
+        self.assertEqual(len(fake_notifier.NOTIFICATIONS), 10)
+        msg = fake_notifier.NOTIFICATIONS[6]
+        self.assertEqual(msg['event_type'], 'cgsnapshot.delete.start')
+        expected['status'] = 'available'
+        self.assertDictMatch(msg['payload'], expected)
+        msg = fake_notifier.NOTIFICATIONS[8]
+        self.assertEqual(msg['event_type'], 'cgsnapshot.delete.end')
+        self.assertDictMatch(msg['payload'], expected)
+
+        cgsnap = db.cgsnapshot_get(
+            context.get_admin_context(read_deleted='yes'),
+            cgsnapshot_id)
+        self.assertEqual(cgsnap['status'], 'deleted')
+        self.assertRaises(exception.NotFound,
+                          db.cgsnapshot_get,
+                          self.context,
+                          cgsnapshot_id)
+
+        self.volume.delete_consistencygroup(self.context, group_id)
+
+    def test_delete_consistencygroup_correct_host(self):
+        """Test consistencygroup can be deleted.
+
+        Test consistencygroup can be deleted when volumes are on
+        the correct volume node.
+        """
+
+        rval = {'status': 'available'}
+        driver.VolumeDriver.create_consistencygroup = \
+            mock.Mock(return_value=rval)
+
+        rval = {'status': 'deleted'}, []
+        driver.VolumeDriver.delete_consistencygroup = \
+            mock.Mock(return_value=rval)
+
+        group = tests_utils.create_consistencygroup(
+            self.context,
+            availability_zone=CONF.storage_availability_zone,
+            volume_type='type1,type2')
+
+        group_id = group['id']
+        volume = tests_utils.create_volume(
+            self.context,
+            consistencygroup_id = group_id,
+            host='host1@backend1#pool1',
+            status = 'creating',
+            size = 1)
+        self.volume.host = 'host1@backend1'
+        volume_id = volume['id']
+        self.volume.create_volume(self.context, volume_id)
+
+        self.volume.delete_consistencygroup(self.context, group_id)
+        cg = db.consistencygroup_get(
+            context.get_admin_context(read_deleted='yes'),
+            group_id)
+        self.assertEqual(cg['status'], 'deleted')
+        self.assertRaises(exception.NotFound,
+                          db.consistencygroup_get,
+                          self.context,
+                          group_id)
+
+    def test_delete_consistencygroup_wrong_host(self):
+        """Test consistencygroup cannot be deleted.
+
+        Test consistencygroup cannot be deleted when volumes in the
+        group are not local to the volume node.
+        """
+
+        rval = {'status': 'available'}
+        driver.VolumeDriver.create_consistencygroup = \
+            mock.Mock(return_value=rval)
+
+        group = tests_utils.create_consistencygroup(
+            self.context,
+            availability_zone=CONF.storage_availability_zone,
+            volume_type='type1,type2')
+
+        group_id = group['id']
+        volume = tests_utils.create_volume(
+            self.context,
+            consistencygroup_id = group_id,
+            host='host1@backend1#pool1',
+            status = 'creating',
+            size = 1)
+        self.volume.host = 'host1@backend2'
+        volume_id = volume['id']
+        self.volume.create_volume(self.context, volume_id)
+
+        self.assertRaises(exception.InvalidVolume,
+                          self.volume.delete_consistencygroup,
+                          self.context,
+                          group_id)
+        cg = db.consistencygroup_get(self.context,
+                                     group_id)
+        # Group is not deleted
+        self.assertEqual(cg['status'], 'available')
+
+    def test_secure_file_operations_enabled(self):
+        """Test secure file operations setting for base driver.
+
+        General, non network file system based drivers do not have
+        anything to do with "secure_file_operations". This test verifies that
+        calling the method always returns False.
+        """
+        ret_flag = self.volume.driver.secure_file_operations_enabled()
+        self.assertFalse(ret_flag)
 
 
 class CopyVolumeToImageTestCase(BaseVolumeTestCase):
@@ -3628,8 +4056,10 @@ class ISCSITestCase(DriverTestCase):
 
         stats = self.volume.driver._stats
 
-        self.assertEqual(stats['total_capacity_gb'], float('5.52'))
-        self.assertEqual(stats['free_capacity_gb'], float('0.52'))
+        self.assertEqual(
+            stats['pools'][0]['total_capacity_gb'], float('5.52'))
+        self.assertEqual(
+            stats['pools'][0]['free_capacity_gb'], float('0.52'))
 
     def test_validate_connector(self):
         iscsi_driver = self.base_driver(configuration=self.configuration)
@@ -3645,14 +4075,15 @@ class ISCSITestCase(DriverTestCase):
                           iscsi_driver.validate_connector, connector)
 
 
-class ISERTestCase(ISCSITestCase):
+class ISERTestCase(DriverTestCase):
     """Test Case for ISERDriver."""
     driver_name = "cinder.volume.drivers.lvm.LVMISERDriver"
     base_driver = driver.ISERDriver
 
     def setUp(self):
         super(ISERTestCase, self).setUp()
-        self.configuration = mox.MockObject(conf.Configuration)
+        self.configuration = mock.Mock(conf.Configuration)
+        self.configuration.safe_get.return_value = None
         self.configuration.num_iser_scan_tries = 3
         self.configuration.iser_num_targets = 100
         self.configuration.iser_target_prefix = 'iqn.2010-10.org.openstack:'
@@ -3681,8 +4112,10 @@ class ISERTestCase(ISCSITestCase):
 
         stats = self.volume.driver.get_volume_stats(refresh=True)
 
-        self.assertEqual(stats['total_capacity_gb'], float('5.52'))
-        self.assertEqual(stats['free_capacity_gb'], float('0.52'))
+        self.assertEqual(
+            stats['pools'][0]['total_capacity_gb'], float('5.52'))
+        self.assertEqual(
+            stats['pools'][0]['free_capacity_gb'], float('0.52'))
         self.assertEqual(stats['storage_protocol'], 'iSER')
 
     def test_get_volume_stats2(self):
@@ -3690,8 +4123,10 @@ class ISERTestCase(ISCSITestCase):
 
         stats = iser_driver.get_volume_stats(refresh=True)
 
-        self.assertEqual(stats['total_capacity_gb'], 'infinite')
-        self.assertEqual(stats['free_capacity_gb'], 'infinite')
+        self.assertEqual(
+            stats['pools'][0]['total_capacity_gb'], 0)
+        self.assertEqual(
+            stats['pools'][0]['free_capacity_gb'], 0)
         self.assertEqual(stats['storage_protocol'], 'iSER')
 
 
@@ -3745,15 +4180,10 @@ class VolumePolicyTestCase(test.TestCase):
     def setUp(self):
         super(VolumePolicyTestCase, self).setUp()
 
-        cinder.policy.reset()
         cinder.policy.init()
 
         self.context = context.get_admin_context()
         self.stubs.Set(brick_lvm.LVM, '_vg_exists', lambda x: True)
-        self.addCleanup(cinder.policy.reset)
-
-    def _set_rules(self, rules):
-        cinder.common.policy.set_brain(cinder.common.policy.Brain(rules))
 
     def test_check_policy(self):
         self.mox.StubOutWithMock(cinder.policy, 'enforce')

@@ -22,19 +22,23 @@ driver creates a virtual machine for each of the volumes. This virtual
 machine is never powered on and is often referred as the shadow VM.
 """
 
+import contextlib
 import distutils.version as dist_version  # pylint: disable=E0611
 import os
+import tempfile
 
 from oslo.config import cfg
 
 from cinder import exception
 from cinder.i18n import _
 from cinder.openstack.common import excutils
+from cinder.openstack.common import fileutils
 from cinder.openstack.common import log as logging
 from cinder.openstack.common import units
 from cinder.openstack.common import uuidutils
 from cinder.volume import driver
 from cinder.volume.drivers.vmware import api
+from cinder.volume.drivers.vmware import datastore as hub
 from cinder.volume.drivers.vmware import error_util
 from cinder.volume.drivers.vmware import vim
 from cinder.volume.drivers.vmware import vim_util
@@ -95,6 +99,10 @@ vmdk_opts = [
                     'The driver attempts to retrieve the version from VMware '
                     'VC server. Set this configuration only if you want to '
                     'override the VC server version.'),
+    cfg.StrOpt('vmware_tmp_dir',
+               default='/tmp',
+               help='Directory where virtual disks are stored during volume '
+                    'backup and restore.')
 ]
 
 CONF = cfg.CONF
@@ -181,7 +189,9 @@ class VMwareEsxVmdkDriver(driver.VolumeDriver):
     # 1.0 - initial version of driver
     # 1.1.0 - selection of datastore based on number of host mounts
     # 1.2.0 - storage profile volume types based placement of volumes
-    VERSION = '1.2.0'
+    # 1.3.0 - support for volume backup/restore
+    # 1.4.0 - support for volume retype
+    VERSION = '1.4.0'
 
     def _do_deprecation_warning(self):
         LOG.warn(_('The VMware ESX VMDK driver is now deprecated and will be '
@@ -200,6 +210,7 @@ class VMwareEsxVmdkDriver(driver.VolumeDriver):
         # No storage policy based placement possible when connecting
         # directly to ESX
         self._storage_policy_enabled = False
+        self._ds_sel = None
 
     @property
     def session(self):
@@ -223,6 +234,13 @@ class VMwareEsxVmdkDriver(driver.VolumeDriver):
             self._volumeops = volumeops.VMwareVolumeOps(self.session,
                                                         max_objects)
         return self._volumeops
+
+    @property
+    def ds_sel(self):
+        if not self._ds_sel:
+            self._ds_sel = hub.DatastoreSelector(self.volumeops,
+                                                 self.session)
+        return self._ds_sel
 
     def do_setup(self, context):
         """Perform validations and establish connection to server.
@@ -388,6 +406,13 @@ class VMwareEsxVmdkDriver(driver.VolumeDriver):
                   {'datastore': best_summary, 'host_count': max_host_count})
         return best_summary
 
+    def _get_extra_spec_storage_profile(self, type_id):
+        """Get storage profile name in the given volume type's extra spec.
+
+        If there is no storage profile in the extra spec, default is None.
+        """
+        return _get_volume_type_extra_spec(type_id, 'storage_profile')
+
     def _get_storage_profile(self, volume):
         """Get storage profile associated with the given volume's volume_type.
 
@@ -395,10 +420,7 @@ class VMwareEsxVmdkDriver(driver.VolumeDriver):
         :return: String value of storage profile if volume type is associated
                  and contains storage_profile extra_spec option; None otherwise
         """
-        type_id = volume['volume_type_id']
-        if type_id is None:
-            return None
-        return _get_volume_type_extra_spec(type_id, 'storage_profile')
+        return self._get_extra_spec_storage_profile(volume['volume_type_id'])
 
     def _filter_ds_by_profile(self, datastores, storage_profile):
         """Filter out datastores that do not match given storage profile.
@@ -455,17 +477,26 @@ class VMwareEsxVmdkDriver(driver.VolumeDriver):
         return (folder, datastore_summary)
 
     @staticmethod
+    def _get_extra_spec_disk_type(type_id):
+        """Get disk type from the given volume type's extra spec.
+
+        If there is no disk type option, default is THIN_VMDK_TYPE.
+        """
+        disk_type = _get_volume_type_extra_spec(type_id,
+                                                'vmdk_type',
+                                                default_value=THIN_VMDK_TYPE)
+        volumeops.VirtualDiskType.validate(disk_type)
+        return disk_type
+
+    @staticmethod
     def _get_disk_type(volume):
-        """Get disk type from volume type.
+        """Get disk type from the given volume's volume type.
 
         :param volume: Volume object
         :return: Disk type
         """
-        return _get_volume_type_extra_spec(volume['volume_type_id'],
-                                           'vmdk_type',
-                                           (THIN_VMDK_TYPE, THICK_VMDK_TYPE,
-                                            EAGER_ZEROED_THICK_VMDK_TYPE),
-                                           THIN_VMDK_TYPE)
+        return VMwareEsxVmdkDriver._get_extra_spec_disk_type(
+            volume['volume_type_id'])
 
     def _get_storage_profile_id(self, volume):
         storage_profile = self._get_storage_profile(volume)
@@ -1276,17 +1307,20 @@ class VMwareEsxVmdkDriver(driver.VolumeDriver):
                   {'id': volume['id'],
                    'image_id': image_id})
 
-        # If the user-specified volume size is greater than image size, we need
-        # to extend the virtual disk to the capacity specified by the user.
-        volume_size_in_bytes = volume['size'] * units.Gi
-        if volume_size_in_bytes > image_size_in_bytes:
-            LOG.debug("Extending volume: %(id)s since the user specified "
-                      "volume size (bytes): %(size)s is greater than image"
-                      " size (bytes): %(image_size)s.",
-                      {'id': volume['id'],
-                       'size': volume_size_in_bytes,
-                       'image_size': image_size_in_bytes})
+        # If the user-specified volume size is greater than backing's
+        # current disk size, we should extend the disk.
+        volume_size = volume['size'] * units.Gi
+        backing = self.volumeops.get_backing(volume['name'])
+        disk_size = self.volumeops.get_disk_size(backing)
+        if volume_size > disk_size:
+            LOG.debug("Extending volume: %(name)s since the user specified "
+                      "volume size (bytes): %(vol_size)d is greater than "
+                      "backing's current disk size (bytes): %(disk_size)d.",
+                      {'name': volume['name'],
+                       'vol_size': volume_size,
+                       'disk_size': disk_size})
             self._extend_vmdk_virtual_disk(volume['name'], volume['size'])
+        # TODO(vbala): handle volume_size < disk_size case.
 
     def copy_volume_to_image(self, context, volume, image_service, image_meta):
         """Creates glance image from volume.
@@ -1336,6 +1370,173 @@ class VMwareEsxVmdkDriver(driver.VolumeDriver):
         LOG.info(_("Done copying volume %(vol)s to a new image %(img)s") %
                  {'vol': volume['name'], 'img': image_meta['name']})
 
+    def _in_use(self, volume):
+        """Check if the given volume is in use."""
+        return volume['instance_uuid'] is not None
+
+    def retype(self, ctxt, volume, new_type, diff, host):
+        """Convert the volume to be of the new type.
+
+        The retype is performed only if the volume is not in use. Retype is NOP
+        if the backing doesn't exist. If disk type conversion is needed, the
+        volume is cloned. If disk type conversion is needed and the volume
+        contains snapshots, the backing is relocated instead of cloning. The
+        backing is also relocated if the current datastore is not compliant
+        with the new storage profile (if any). Finally, the storage profile of
+        the backing VM is updated.
+
+        :param ctxt: Context
+        :param volume: A dictionary describing the volume to retype
+        :param new_type: A dictionary describing the volume type to convert to
+        :param diff: A dictionary with the difference between the two types
+        :param host: A dictionary describing the host to migrate to, where
+                     host['host'] is its name, and host['capabilities'] is a
+                     dictionary of its reported capabilities (unused)
+        :returns: True if the retype occurred; False otherwise.
+        """
+        # Can't attempt retype if the volume is in use.
+        if self._in_use(volume):
+            LOG.warn(_("Volume: %s is in use, can't retype."),
+                     volume['name'])
+            return False
+
+        # If the backing doesn't exist, retype is NOP.
+        backing = self.volumeops.get_backing(volume['name'])
+        if backing is None:
+            LOG.debug("Backing for volume: %s doesn't exist; retype is NOP.",
+                      volume['name'])
+            return True
+
+        # Check whether we need disk type conversion.
+        disk_type = VMwareEsxVmdkDriver._get_disk_type(volume)
+        new_disk_type = VMwareEsxVmdkDriver._get_extra_spec_disk_type(
+            new_type['id'])
+        need_disk_type_conversion = disk_type != new_disk_type
+
+        # Check whether we need to relocate the backing. If the backing
+        # contains snapshots, relocate is the only way to achieve disk type
+        # conversion.
+        need_relocate = (need_disk_type_conversion and
+                         self.volumeops.snapshot_exists(backing))
+
+        datastore = self.volumeops.get_datastore(backing)
+
+        # Check whether we need to change the storage profile.
+        need_profile_change = False
+        is_compliant = True
+        new_profile = None
+        if self._storage_policy_enabled:
+            profile = self._get_storage_profile(volume)
+            new_profile = self._get_extra_spec_storage_profile(new_type['id'])
+            need_profile_change = profile != new_profile
+            # The current datastore may be compliant with the new profile.
+            is_compliant = self.ds_sel.is_datastore_compliant(datastore,
+                                                              new_profile)
+
+        # No need to relocate or clone if there is no disk type conversion and
+        # the current datastore is compliant with the new profile or storage
+        # policy is disabled.
+        if not need_disk_type_conversion and is_compliant:
+            LOG.debug("Backing: %(backing)s for volume: %(name)s doesn't need "
+                      "disk type conversion.",
+                      {'backing': backing,
+                       'name': volume['name']})
+            if self._storage_policy_enabled:
+                LOG.debug("Backing: %(backing)s for volume: %(name)s is "
+                          "compliant with the new profile: %(new_profile)s.",
+                          {'backing': backing,
+                           'name': volume['name'],
+                           'new_profile': new_profile})
+        else:
+            # Set requirements for datastore selection.
+            req = {}
+            req[hub.DatastoreSelector.SIZE_BYTES] = (volume['size'] *
+                                                     units.Gi)
+
+            if need_relocate:
+                LOG.debug("Backing: %s should be relocated.", backing)
+                req[hub.DatastoreSelector.HARD_ANTI_AFFINITY_DS] = (
+                    [datastore.value])
+
+            if need_profile_change:
+                LOG.debug("Backing: %(backing)s needs a profile change to: "
+                          "%(profile)s.",
+                          {'backing': backing,
+                           'profile': new_profile})
+                req[hub.DatastoreSelector.PROFILE_NAME] = new_profile
+
+            # Select datastore satisfying the requirements.
+            best_candidate = self.ds_sel.select_datastore(req)
+            if not best_candidate:
+                # No candidate datastores; can't retype.
+                LOG.warn(_("There are no datastores matching new requirements;"
+                           " can't retype volume: %s."),
+                         volume['name'])
+                return False
+
+            (host, rp, summary) = best_candidate
+            new_datastore = summary.datastore
+            if datastore.value != new_datastore.value:
+                # Datastore changed; relocate the backing.
+                LOG.debug("Backing: %s needs to be relocated for retype.",
+                          backing)
+                self.volumeops.relocate_backing(
+                    backing, new_datastore, rp, host, new_disk_type)
+
+                dc = self.volumeops.get_dc(rp)
+                folder = self._get_volume_group_folder(dc)
+                self.volumeops.move_backing_to_folder(backing, folder)
+            elif need_disk_type_conversion:
+                # Same datastore, but clone is needed for disk type conversion.
+                LOG.debug("Backing: %s needs to be cloned for retype.",
+                          backing)
+
+                new_backing = None
+                renamed = False
+                tmp_name = uuidutils.generate_uuid()
+                try:
+                    self.volumeops.rename_backing(backing, tmp_name)
+                    renamed = True
+
+                    new_backing = self.volumeops.clone_backing(
+                        volume['name'], backing, None,
+                        volumeops.FULL_CLONE_TYPE, datastore, new_disk_type)
+                    self._delete_temp_backing(backing)
+                    backing = new_backing
+                except error_util.VimException:
+                    with excutils.save_and_reraise_exception():
+                        LOG.exception(_("Error occurred while cloning backing:"
+                                        " %s during retype."),
+                                      backing)
+                        if renamed:
+                            LOG.debug("Undo rename of backing: %(backing)s; "
+                                      "changing name from %(new_name)s to "
+                                      "%(old_name)s.",
+                                      {'backing': backing,
+                                       'new_name': tmp_name,
+                                       'old_name': volume['name']})
+                            try:
+                                self.volumeops.rename_backing(backing,
+                                                              volume['name'])
+                            except error_util.VimException:
+                                LOG.warn(_("Changing backing: %(backing)s name"
+                                           " from %(new_name)s to %(old_name)s"
+                                           " failed."),
+                                         {'backing': backing,
+                                          'new_name': tmp_name,
+                                          'old_name': volume['name']})
+
+        # Update the backing's storage profile if needed.
+        if need_profile_change:
+            profile_id = None
+            if new_profile is not None:
+                profile_id = self.ds_sel.get_profile_id(new_profile)
+            self.volumeops.change_backing_profile(backing, profile_id)
+
+        # Retype is done.
+        LOG.debug("Volume: %s retype is done.", volume['name'])
+        return True
+
     def extend_volume(self, volume, new_size):
         """Extend vmdk to new_size.
 
@@ -1381,6 +1582,227 @@ class VMwareEsxVmdkDriver(driver.VolumeDriver):
                                 "extending."), vol_name)
         LOG.info(_("Done extending volume %(vol)s to size %(size)s GB.") %
                  {'vol': vol_name, 'size': new_size})
+
+    @contextlib.contextmanager
+    def _temporary_file(self, *args, **kwargs):
+        """Create a temporary file and return its path."""
+        tmp_dir = self.configuration.vmware_tmp_dir
+        fileutils.ensure_tree(tmp_dir)
+        fd, tmp = tempfile.mkstemp(
+            dir=self.configuration.vmware_tmp_dir, *args, **kwargs)
+        try:
+            os.close(fd)
+            yield tmp
+        finally:
+            fileutils.delete_if_exists(tmp)
+
+    def _download_vmdk(self, context, volume, backing, tmp_file_path):
+        """Download virtual disk in streamOptimized format."""
+        timeout = self.configuration.vmware_image_transfer_timeout_secs
+        host_ip = self.configuration.vmware_host_ip
+        vmdk_ds_file_path = self.volumeops.get_vmdk_path(backing)
+
+        with fileutils.file_open(tmp_file_path, "wb") as tmp_file:
+            vmware_images.download_stream_optimized_disk(
+                context, timeout, tmp_file, session=self.session,
+                host=host_ip, vm=backing, vmdk_file_path=vmdk_ds_file_path,
+                vmdk_size=volume['size'] * units.Gi)
+
+    def backup_volume(self, context, backup, backup_service):
+        """Create a new backup from an existing volume."""
+        volume = self.db.volume_get(context, backup['volume_id'])
+
+        LOG.debug("Creating backup: %(backup_id)s for volume: %(name)s.",
+                  {'backup_id': backup['id'],
+                   'name': volume['name']})
+
+        backing = self.volumeops.get_backing(volume['name'])
+        if backing is None:
+            LOG.debug("Creating backing for volume: %s.", volume['name'])
+            backing = self._create_backing_in_inventory(volume)
+
+        tmp_vmdk_name = uuidutils.generate_uuid()
+        with self._temporary_file(suffix=".vmdk",
+                                  prefix=tmp_vmdk_name) as tmp_file_path:
+            # TODO(vbala) Clean up vmware_tmp_dir during driver init.
+            LOG.debug("Using temporary file: %(tmp_path)s for creating backup:"
+                      " %(backup_id)s.",
+                      {'tmp_path': tmp_file_path,
+                       'backup_id': backup['id']})
+            self._download_vmdk(context, volume, backing, tmp_file_path)
+            with fileutils.file_open(tmp_file_path, "rb") as tmp_file:
+                    LOG.debug("Calling backup service to backup file: %s.",
+                              tmp_file_path)
+                    backup_service.backup(backup, tmp_file)
+                    LOG.debug("Created backup: %(backup_id)s for volume: "
+                              "%(name)s.",
+                              {'backup_id': backup['id'],
+                               'name': volume['name']})
+
+    def _create_backing_from_stream_optimized_file(
+            self, context, name, volume, tmp_file_path, file_size_bytes):
+        """Create backing from streamOptimized virtual disk file."""
+        LOG.debug("Creating backing: %(name)s from virtual disk: %(path)s.",
+                  {'name': name,
+                   'path': tmp_file_path})
+
+        (host, rp, folder, summary) = self._select_ds_for_volume(volume)
+        LOG.debug("Selected datastore: %(ds)s for backing: %(name)s.",
+                  {'ds': summary.name,
+                   'name': name})
+
+        # Prepare import spec for backing.
+        cf = self.session.vim.client.factory
+        vm_import_spec = cf.create('ns0:VirtualMachineImportSpec')
+
+        profile_id = self._get_storage_profile_id(volume)
+        disk_type = VMwareEsxVmdkDriver._get_disk_type(volume)
+        vm_create_spec = self.volumeops.get_create_spec(name,
+                                                        0,
+                                                        disk_type,
+                                                        summary.name,
+                                                        profile_id)
+        vm_import_spec.configSpec = vm_create_spec
+
+        timeout = self.configuration.vmware_image_transfer_timeout_secs
+        host_ip = self.configuration.vmware_host_ip
+        try:
+            with fileutils.file_open(tmp_file_path, "rb") as tmp_file:
+                vm_ref = vmware_images.upload_stream_optimized_disk(
+                    context, timeout, tmp_file, session=self.session,
+                    host=host_ip, resource_pool=rp, vm_folder=folder,
+                    vm_create_spec=vm_import_spec, vmdk_size=file_size_bytes)
+                LOG.debug("Created backing: %(name)s from virtual disk: "
+                          "%(path)s.",
+                          {'name': name,
+                           'path': tmp_file_path})
+                return vm_ref
+        except Exception:
+            with excutils.save_and_reraise_exception():
+                LOG.exception(_("Error occurred while creating temporary "
+                                "backing."))
+                backing = self.volumeops.get_backing(name)
+                if backing is not None:
+                    self._delete_temp_backing(backing)
+
+    def _restore_backing(
+            self, context, volume, backing, tmp_file_path, backup_size):
+        """Restore backing from backup."""
+        # Create temporary backing from streamOptimized file.
+        src_name = uuidutils.generate_uuid()
+        src = self._create_backing_from_stream_optimized_file(
+            context, src_name, volume, tmp_file_path, backup_size)
+
+        # Copy temporary backing for desired disk type conversion.
+        new_backing = (backing is None)
+        if new_backing:
+            # No backing exists; clone can be used as the volume backing.
+            dest_name = volume['name']
+        else:
+            # Backing exists; clone can be used as the volume backing only
+            # after deleting the current backing.
+            dest_name = uuidutils.generate_uuid()
+
+        dest = None
+        tmp_backing_name = None
+        renamed = False
+        try:
+            # Find datastore for clone.
+            (host, rp, folder, summary) = self._select_ds_for_volume(volume)
+            datastore = summary.datastore
+
+            disk_type = VMwareEsxVmdkDriver._get_disk_type(volume)
+            dest = self.volumeops.clone_backing(dest_name, src, None,
+                                                volumeops.FULL_CLONE_TYPE,
+                                                datastore, disk_type)
+            if new_backing:
+                LOG.debug("Created new backing: %s for restoring backup.",
+                          dest_name)
+                return
+
+            # Rename current backing.
+            tmp_backing_name = uuidutils.generate_uuid()
+            self.volumeops.rename_backing(backing, tmp_backing_name)
+            renamed = True
+
+            # Rename clone in order to treat it as the volume backing.
+            self.volumeops.rename_backing(dest, volume['name'])
+
+            # Now we can delete the old backing.
+            self._delete_temp_backing(backing)
+
+            LOG.debug("Deleted old backing and renamed clone for restoring "
+                      "backup.")
+        except (error_util.VimException, error_util.VMwareDriverException):
+            with excutils.save_and_reraise_exception():
+                if dest is not None:
+                    # Copy happened; we need to delete the clone.
+                    self._delete_temp_backing(dest)
+                    if renamed:
+                        # Old backing was renamed; we need to undo that.
+                        try:
+                            self.volumeops.rename_backing(backing,
+                                                          volume['name'])
+                        except error_util.VimException:
+                            LOG.warn(_("Cannot undo volume rename; old name "
+                                       "was %(old_name)s and new name is "
+                                       "%(new_name)s."),
+                                     {'old_name': volume['name'],
+                                      'new_name': tmp_backing_name},
+                                     exc_info=True)
+        finally:
+            # Delete the temporary backing.
+            self._delete_temp_backing(src)
+
+    def restore_backup(self, context, backup, volume, backup_service):
+        """Restore an existing backup to a new or existing volume.
+
+        This method raises InvalidVolume if the existing volume contains
+        snapshots since it is not possible to restore the virtual disk of
+        a backing with snapshots.
+        """
+        LOG.debug("Restoring backup: %(backup_id)s to volume: %(name)s.",
+                  {'backup_id': backup['id'],
+                   'name': volume['name']})
+
+        backing = self.volumeops.get_backing(volume['name'])
+        if backing is not None and self.volumeops.snapshot_exists(backing):
+            msg = _("Volume cannot be restored since it contains snapshots.")
+            LOG.error(msg)
+            raise exception.InvalidVolume(reason=msg)
+
+        tmp_vmdk_name = uuidutils.generate_uuid()
+        with self._temporary_file(suffix=".vmdk",
+                                  prefix=tmp_vmdk_name) as tmp_file_path:
+                LOG.debug("Using temporary file: %(tmp_path)s for restoring "
+                          "backup: %(backup_id)s.",
+                          {'tmp_path': tmp_file_path,
+                           'backup_id': backup['id']})
+                with fileutils.file_open(tmp_file_path, "wb") as tmp_file:
+                    LOG.debug("Calling backup service to restore backup: "
+                              "%(backup_id)s to file: %(tmp_path)s.",
+                              {'backup_id': backup['id'],
+                               'tmp_path': tmp_file_path})
+                    backup_service.restore(backup, volume['id'], tmp_file)
+                    LOG.debug("Backup: %(backup_id)s restored to file: "
+                              "%(tmp_path)s.",
+                              {'backup_id': backup['id'],
+                               'tmp_path': tmp_file_path})
+                self._restore_backing(context, volume, backing, tmp_file_path,
+                                      backup['size'] * units.Gi)
+
+                if backup['size'] < volume['size']:
+                    # Current backing size is backup size.
+                    LOG.debug("Backup size: %(backup_size)d is less than "
+                              "volume size: %(vol_size)d; extending volume.",
+                              {'backup_size': backup['size'],
+                               'vol_size': volume['size']})
+                    self.extend_volume(volume, volume['size'])
+
+                LOG.debug("Backup: %(backup_id)s restored to volume: "
+                          "%(name)s.",
+                          {'backup_id': backup['id'],
+                           'name': volume['name']})
 
 
 class VMwareVcVmdkDriver(VMwareEsxVmdkDriver):
@@ -1472,9 +1894,11 @@ class VMwareVcVmdkDriver(VMwareEsxVmdkDriver):
             # Destroy current session so that it is recreated with pbm enabled
             self._session = None
 
-        # recreate session and initialize volumeops
+        # recreate session and initialize volumeops and ds_sel
+        # TODO(vbala) remove properties: session, volumeops and ds_sel
         max_objects = self.configuration.vmware_max_objects_retrieval
         self._volumeops = volumeops.VMwareVolumeOps(self.session, max_objects)
+        self._ds_sel = hub.DatastoreSelector(self.volumeops, self.session)
 
         LOG.info(_("Successfully setup driver: %(driver)s for server: "
                    "%(ip)s.") % {'driver': self.__class__.__name__,

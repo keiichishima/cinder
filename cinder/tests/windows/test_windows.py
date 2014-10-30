@@ -284,7 +284,6 @@ class TestWindowsDriver(test.TestCase):
                                  mox.IgnoreArg())
         windows_utils.WindowsUtils.change_disk_status(volume['name'],
                                                       mox.IsA(bool))
-        os.unlink(mox.IsA(str))
         vhdutils.VHDUtils.convert_vhd(fake_temp_path,
                                       fake_volume_path,
                                       constants.VHD_TYPE_FIXED)
@@ -306,15 +305,19 @@ class TestWindowsDriver(test.TestCase):
         image_meta = db_fakes.get_fake_image_meta()
 
         fake_get_supported_format = lambda x: supported_format
+
+        self.stubs.Set(os.path, 'exists', lambda x: False)
         self.stubs.Set(drv, 'local_path', self.fake_local_path)
         self.stubs.Set(windows_utils.WindowsUtils, 'get_supported_format',
                        fake_get_supported_format)
 
+        self.mox.StubOutWithMock(fileutils, 'ensure_tree')
         self.mox.StubOutWithMock(fileutils, 'delete_if_exists')
         self.mox.StubOutWithMock(image_utils, 'upload_volume')
         self.mox.StubOutWithMock(windows_utils.WindowsUtils, 'copy_vhd_disk')
         self.mox.StubOutWithMock(vhdutils.VHDUtils, 'convert_vhd')
 
+        fileutils.ensure_tree(CONF.image_conversion_dir)
         temp_vhd_path = os.path.join(CONF.image_conversion_dir,
                                      str(image_meta['id']) + "." +
                                      supported_format)
@@ -327,7 +330,7 @@ class TestWindowsDriver(test.TestCase):
             vhdutils.VHDUtils.convert_vhd(temp_vhd_path, upload_image,
                                           constants.VHD_TYPE_DYNAMIC)
 
-        image_utils.upload_volume(None, None, image_meta, upload_image, 'vpc')
+        image_utils.upload_volume(None, None, image_meta, upload_image, 'vhd')
 
         fileutils.delete_if_exists(temp_vhd_path)
         fileutils.delete_if_exists(upload_image)

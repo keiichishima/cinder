@@ -31,6 +31,7 @@ from cinder.openstack.common import log as logging
 from cinder import test
 from cinder.volume import configuration as conf
 from cinder.volume.drivers.netapp import api
+from cinder.volume.drivers.netapp import common
 from cinder.volume.drivers.netapp import nfs as netapp_nfs
 from cinder.volume.drivers.netapp import utils
 
@@ -50,10 +51,11 @@ def create_configuration():
 
 
 class FakeVolume(object):
-    def __init__(self, size=0):
+    def __init__(self, host='', size=0):
         self.size = size
         self.id = hash(self)
         self.name = None
+        self.host = host
 
     def __getitem__(self, key):
         return self.__dict__[key]
@@ -110,21 +112,22 @@ class NetappDirectCmodeNfsDriverTestCase(test.TestCase):
         """Tests volume creation from snapshot."""
         drv = self._driver
         mox = self.mox
-        volume = FakeVolume(1)
+        location = '127.0.0.1:/nfs'
+        host = 'hostname@backend#' + location
+        volume = FakeVolume(host, 1)
         snapshot = FakeSnapshot(1)
 
-        location = '127.0.0.1:/nfs'
         expected_result = {'provider_location': location}
         mox.StubOutWithMock(drv, '_clone_volume')
         mox.StubOutWithMock(drv, '_get_volume_location')
         mox.StubOutWithMock(drv, 'local_path')
         mox.StubOutWithMock(drv, '_discover_file_till_timeout')
-        mox.StubOutWithMock(drv, '_set_rw_permissions_for_all')
+        mox.StubOutWithMock(drv, '_set_rw_permissions')
         drv._clone_volume(IgnoreArg(), IgnoreArg(), IgnoreArg())
         drv._get_volume_location(IgnoreArg()).AndReturn(location)
         drv.local_path(IgnoreArg()).AndReturn('/mnt')
         drv._discover_file_till_timeout(IgnoreArg()).AndReturn(True)
-        drv._set_rw_permissions_for_all(IgnoreArg())
+        drv._set_rw_permissions(IgnoreArg())
 
         mox.ReplayAll()
 
@@ -186,11 +189,9 @@ class NetappDirectCmodeNfsDriverTestCase(test.TestCase):
         mox = self.mox
         drv = self._driver
         required_flags = [
-            'netapp_transport_type',
             'netapp_login',
             'netapp_password',
-            'netapp_server_hostname',
-            'netapp_server_port']
+            'netapp_server_hostname']
 
         # set required flags
         for flag in required_flags:
@@ -523,7 +524,7 @@ class NetappDirectCmodeNfsDriverTestCase(test.TestCase):
         mox.StubOutWithMock(image_utils, 'qemu_img_info')
         mox.StubOutWithMock(drv, '_clone_volume')
         mox.StubOutWithMock(drv, '_discover_file_till_timeout')
-        mox.StubOutWithMock(drv, '_set_rw_permissions_for_all')
+        mox.StubOutWithMock(drv, '_set_rw_permissions')
         mox.StubOutWithMock(drv, '_resize_image_file')
         mox.StubOutWithMock(drv, '_is_share_vol_compatible')
 
@@ -531,13 +532,13 @@ class NetappDirectCmodeNfsDriverTestCase(test.TestCase):
         drv._is_cloneable_share(IgnoreArg()).AndReturn('127.0.0.1:/share')
         drv._is_share_vol_compatible(IgnoreArg(), IgnoreArg()).AndReturn(True)
         drv._get_mount_point_for_share(IgnoreArg()).AndReturn('/mnt')
-        image_utils.qemu_img_info('/mnt/img-id').AndReturn(
-            self.get_img_info('raw'))
+        image_utils.qemu_img_info('/mnt/img-id', run_as_root=True).\
+            AndReturn(self.get_img_info('raw'))
         drv._clone_volume(
             'img-id', 'vol', share='127.0.0.1:/share', volume_id=None)
         drv._get_mount_point_for_share(IgnoreArg()).AndReturn('/mnt')
         drv._discover_file_till_timeout(IgnoreArg()).AndReturn(True)
-        drv._set_rw_permissions_for_all('/mnt/vol')
+        drv._set_rw_permissions('/mnt/vol')
         drv._resize_image_file({'name': 'vol'}, IgnoreArg())
 
         mox.ReplayAll()
@@ -555,7 +556,7 @@ class NetappDirectCmodeNfsDriverTestCase(test.TestCase):
         mox.StubOutWithMock(image_utils, 'qemu_img_info')
         mox.StubOutWithMock(drv, '_clone_volume')
         mox.StubOutWithMock(drv, '_discover_file_till_timeout')
-        mox.StubOutWithMock(drv, '_set_rw_permissions_for_all')
+        mox.StubOutWithMock(drv, '_set_rw_permissions')
         mox.StubOutWithMock(drv, '_resize_image_file')
         mox.StubOutWithMock(image_utils, 'convert_image')
         mox.StubOutWithMock(drv, '_register_image_in_cache')
@@ -566,19 +567,20 @@ class NetappDirectCmodeNfsDriverTestCase(test.TestCase):
             '127.0.0.1:/share')
         drv._is_share_vol_compatible(IgnoreArg(), IgnoreArg()).AndReturn(True)
         drv._get_mount_point_for_share('127.0.0.1:/share').AndReturn('/mnt')
-        image_utils.qemu_img_info('/mnt/img-id').AndReturn(
-            self.get_img_info('notraw'))
-        image_utils.convert_image(IgnoreArg(), IgnoreArg(), 'raw')
-        image_utils.qemu_img_info('/mnt/vol').AndReturn(
-            self.get_img_info('raw'))
+        image_utils.qemu_img_info('/mnt/img-id', run_as_root=True).\
+            AndReturn(self.get_img_info('notraw'))
+        image_utils.convert_image(IgnoreArg(), IgnoreArg(), 'raw',
+                                  run_as_root=True)
+        image_utils.qemu_img_info('/mnt/vol', run_as_root=True).\
+            AndReturn(self.get_img_info('raw'))
         drv._register_image_in_cache(IgnoreArg(), IgnoreArg())
         drv._get_mount_point_for_share('127.0.0.1:/share').AndReturn('/mnt')
         drv._discover_file_till_timeout(IgnoreArg()).AndReturn(True)
-        drv._set_rw_permissions_for_all('/mnt/vol')
+        drv._set_rw_permissions('/mnt/vol')
         drv._resize_image_file({'name': 'vol'}, IgnoreArg())
 
         mox.ReplayAll()
-        drv. clone_image(
+        drv.clone_image(
             volume, ('nfs://127.0.0.1/share/img-id', None), 'image_id', {})
         mox.VerifyAll()
 
@@ -604,11 +606,12 @@ class NetappDirectCmodeNfsDriverTestCase(test.TestCase):
             '127.0.0.1:/share')
         drv._is_share_vol_compatible(IgnoreArg(), IgnoreArg()).AndReturn(True)
         drv._get_mount_point_for_share('127.0.0.1:/share').AndReturn('/mnt')
-        image_utils.qemu_img_info('/mnt/img-id').AndReturn(
-            self.get_img_info('notraw'))
-        image_utils.convert_image(IgnoreArg(), IgnoreArg(), 'raw')
-        image_utils.qemu_img_info('/mnt/vol').AndReturn(
-            self.get_img_info('raw'))
+        image_utils.qemu_img_info('/mnt/img-id', run_as_root=True).\
+            AndReturn(self.get_img_info('notraw'))
+        image_utils.convert_image(IgnoreArg(), IgnoreArg(), 'raw',
+                                  run_as_root=True)
+        image_utils.qemu_img_info('/mnt/vol', run_as_root=True).\
+            AndReturn(self.get_img_info('raw'))
         drv._register_image_in_cache(IgnoreArg(), IgnoreArg())
         drv.local_path(IgnoreArg()).AndReturn('/mnt/vol')
         drv._discover_file_till_timeout(IgnoreArg()).AndReturn(False)
@@ -634,7 +637,7 @@ class NetappDirectCmodeNfsDriverTestCase(test.TestCase):
         mox.StubOutWithMock(image_utils, 'qemu_img_info')
         mox.StubOutWithMock(drv, '_clone_volume')
         mox.StubOutWithMock(drv, '_discover_file_till_timeout')
-        mox.StubOutWithMock(drv, '_set_rw_permissions_for_all')
+        mox.StubOutWithMock(drv, '_set_rw_permissions')
         mox.StubOutWithMock(drv, '_resize_image_file')
         mox.StubOutWithMock(image_utils, 'convert_image')
         mox.StubOutWithMock(drv, '_register_image_in_cache')
@@ -648,15 +651,16 @@ class NetappDirectCmodeNfsDriverTestCase(test.TestCase):
             '127.0.0.1:/share')
         drv._is_share_vol_compatible(IgnoreArg(), IgnoreArg()).AndReturn(True)
         drv._get_mount_point_for_share('127.0.0.1:/share').AndReturn('/mnt')
-        image_utils.qemu_img_info('/mnt/img-id').AndReturn(
-            self.get_img_info('notraw'))
-        image_utils.convert_image(IgnoreArg(), IgnoreArg(), 'raw')
-        image_utils.qemu_img_info('/mnt/vol').AndReturn(
-            self.get_img_info('raw'))
+        image_utils.qemu_img_info('/mnt/img-id', run_as_root=True).\
+            AndReturn(self.get_img_info('notraw'))
+        image_utils.convert_image(IgnoreArg(), IgnoreArg(), 'raw',
+                                  run_as_root=True)
+        image_utils.qemu_img_info('/mnt/vol', run_as_root=True).\
+            AndReturn(self.get_img_info('raw'))
         drv._register_image_in_cache(IgnoreArg(), IgnoreArg())
         drv.local_path(IgnoreArg()).AndReturn('/mnt/vol')
         drv._discover_file_till_timeout(IgnoreArg()).AndReturn(True)
-        drv._set_rw_permissions_for_all('/mnt/vol')
+        drv._set_rw_permissions('/mnt/vol')
         drv._resize_image_file(
             IgnoreArg(), IgnoreArg()).AndRaise(exception.InvalidResults())
         drv.local_path(IgnoreArg()).AndReturn('/mnt/vol')
@@ -797,6 +801,72 @@ class NetappDirectCmodeNfsDriverTestCase(test.TestCase):
         if location != "nfs://host/path/image-id":
             self.fail("Unexpected direct url.")
 
+    def test_get_pool(self):
+        pool = self._driver.get_pool({'provider_location': 'fake-share'})
+        self.assertEqual(pool, 'fake-share')
+
+    def _set_config(self, configuration):
+        configuration.netapp_storage_family = 'ontap_cluster'
+        configuration.netapp_storage_protocol = 'nfs'
+        configuration.netapp_login = 'admin'
+        configuration.netapp_password = 'pass'
+        configuration.netapp_server_hostname = '127.0.0.1'
+        configuration.netapp_transport_type = 'http'
+        configuration.netapp_server_port = None
+        configuration.netapp_vserver = 'openstack'
+        configuration.nfs_shares_config = '/nfs'
+        return configuration
+
+    @mock.patch.object(netapp_nfs.NetAppNFSDriver, 'do_setup')
+    def test_do_setup_all_default(self, mock_set_up):
+        configuration = self._set_config(create_configuration())
+        driver = common.NetAppDriver(configuration=configuration)
+        driver._do_custom_setup = mock.Mock()
+        driver.do_setup(context='')
+        self.assertEqual('80', driver._client.get_port())
+        self.assertEqual('http', driver._client.get_transport_type())
+
+    @mock.patch.object(netapp_nfs.NetAppNFSDriver, 'do_setup')
+    def test_do_setup_http_default_port(self, mock_setup):
+        configuration = self._set_config(create_configuration())
+        configuration.netapp_transport_type = 'http'
+        driver = common.NetAppDriver(configuration=configuration)
+        driver._do_custom_setup = mock.Mock()
+        driver.do_setup(context='')
+        self.assertEqual('80', driver._client.get_port())
+        self.assertEqual('http', driver._client.get_transport_type())
+
+    @mock.patch.object(netapp_nfs.NetAppNFSDriver, 'do_setup')
+    def test_do_setup_https_default_port(self, mock_setup):
+        configuration = self._set_config(create_configuration())
+        configuration.netapp_transport_type = 'https'
+        driver = common.NetAppDriver(configuration=configuration)
+        driver._do_custom_setup = mock.Mock()
+        driver.do_setup(context='')
+        self.assertEqual('443', driver._client.get_port())
+        self.assertEqual('https', driver._client.get_transport_type())
+
+    @mock.patch.object(netapp_nfs.NetAppNFSDriver, 'do_setup')
+    def test_do_setup_http_non_default_port(self, mock_setup):
+        configuration = self._set_config(create_configuration())
+        configuration.netapp_server_port = 81
+        driver = common.NetAppDriver(configuration=configuration)
+        driver._do_custom_setup = mock.Mock()
+        driver.do_setup(context='')
+        self.assertEqual('81', driver._client.get_port())
+        self.assertEqual('http', driver._client.get_transport_type())
+
+    @mock.patch.object(netapp_nfs.NetAppNFSDriver, 'do_setup')
+    def test_do_setup_https_non_default_port(self, mock_setup):
+        configuration = self._set_config(create_configuration())
+        configuration.netapp_transport_type = 'https'
+        configuration.netapp_server_port = 446
+        driver = common.NetAppDriver(configuration=configuration)
+        driver._do_custom_setup = mock.Mock()
+        driver.do_setup(context='')
+        self.assertEqual('446', driver._client.get_port())
+        self.assertEqual('https', driver._client.get_transport_type())
+
 
 class NetappDirectCmodeNfsDriverOnlyTestCase(test.TestCase):
     """Test direct NetApp C Mode driver only and not inherit."""
@@ -813,6 +883,7 @@ class NetappDirectCmodeNfsDriverOnlyTestCase(test.TestCase):
         self._driver.ssc_enabled = True
         self._driver.configuration.netapp_copyoffload_tool_path = 'cof_path'
 
+    @mock.patch.object(utils, 'LOG', mock.Mock())
     @mock.patch.object(netapp_nfs, 'get_volume_extra_specs')
     def test_create_volume(self, mock_volume_extra_specs):
         drv = self._driver
@@ -820,37 +891,77 @@ class NetappDirectCmodeNfsDriverOnlyTestCase(test.TestCase):
         extra_specs = {}
         mock_volume_extra_specs.return_value = extra_specs
         fake_share = 'localhost:myshare'
+        host = 'hostname@backend#' + fake_share
         with mock.patch.object(drv, '_ensure_shares_mounted'):
-            with mock.patch.object(drv, '_find_shares',
-                                   return_value=['localhost:myshare']):
-                with mock.patch.object(drv, '_do_create_volume'):
-                    volume_info = self._driver.create_volume(FakeVolume(1))
-                    self.assertEqual(volume_info.get('provider_location'),
-                                     fake_share)
+            with mock.patch.object(drv, '_do_create_volume'):
+                volume_info = self._driver.create_volume(FakeVolume(host, 1))
+                self.assertEqual(volume_info.get('provider_location'),
+                                 fake_share)
+                self.assertEqual(0, utils.LOG.warn.call_count)
+
+    @mock.patch.object(utils, 'LOG', mock.Mock())
+    @mock.patch.object(netapp_nfs, 'get_volume_extra_specs')
+    def test_create_volume_obsolete_extra_spec(self, mock_volume_extra_specs):
+        drv = self._driver
+        drv.ssc_enabled = False
+        extra_specs = {'netapp:raid_type': 'raid4'}
+        mock_volume_extra_specs.return_value = extra_specs
+        fake_share = 'localhost:myshare'
+        host = 'hostname@backend#' + fake_share
+        with mock.patch.object(drv, '_ensure_shares_mounted'):
+            with mock.patch.object(drv, '_do_create_volume'):
+                self._driver.create_volume(FakeVolume(host, 1))
+                warn_msg = 'Extra spec netapp:raid_type is obsolete.  ' \
+                           'Use netapp_raid_type instead.'
+                utils.LOG.warn.assert_called_once_with(warn_msg)
+
+    @mock.patch.object(utils, 'LOG', mock.Mock())
+    @mock.patch.object(netapp_nfs, 'get_volume_extra_specs')
+    def test_create_volume_deprecated_extra_spec(self,
+                                                 mock_volume_extra_specs):
+        drv = self._driver
+        drv.ssc_enabled = False
+        extra_specs = {'netapp_thick_provisioned': 'true'}
+        mock_volume_extra_specs.return_value = extra_specs
+        fake_share = 'localhost:myshare'
+        host = 'hostname@backend#' + fake_share
+        with mock.patch.object(drv, '_ensure_shares_mounted'):
+            with mock.patch.object(drv, '_do_create_volume'):
+                self._driver.create_volume(FakeVolume(host, 1))
+                warn_msg = 'Extra spec netapp_thick_provisioned is ' \
+                           'deprecated.  Use netapp_thin_provisioned instead.'
+                utils.LOG.warn.assert_called_once_with(warn_msg)
+
+    def test_create_volume_no_pool_specified(self):
+        drv = self._driver
+        drv.ssc_enabled = False
+        host = 'hostname@backend'  # missing pool
+        with mock.patch.object(drv, '_ensure_shares_mounted'):
+            self.assertRaises(exception.InvalidHost,
+                              self._driver.create_volume, FakeVolume(host, 1))
 
     @mock.patch.object(netapp_nfs, 'get_volume_extra_specs')
     def test_create_volume_with_qos_policy(self, mock_volume_extra_specs):
         drv = self._driver
         drv.ssc_enabled = False
         extra_specs = {'netapp:qos_policy_group': 'qos_policy_1'}
-        fake_volume = FakeVolume(1)
         fake_share = 'localhost:myshare'
+        host = 'hostname@backend#' + fake_share
+        fake_volume = FakeVolume(host, 1)
         fake_qos_policy = 'qos_policy_1'
         mock_volume_extra_specs.return_value = extra_specs
 
         with mock.patch.object(drv, '_ensure_shares_mounted'):
-            with mock.patch.object(drv, '_find_shares',
-                                   return_value=['localhost:myshare']):
-                with mock.patch.object(drv, '_do_create_volume'):
-                    with mock.patch.object(drv,
-                                           '_set_qos_policy_group_on_volume'
-                                           ) as mock_set_qos:
-                        volume_info = self._driver.create_volume(fake_volume)
-                        self.assertEqual(volume_info.get('provider_location'),
-                                         'localhost:myshare')
-                        mock_set_qos.assert_called_once_with(fake_volume,
-                                                             fake_share,
-                                                             fake_qos_policy)
+            with mock.patch.object(drv, '_do_create_volume'):
+                with mock.patch.object(drv,
+                                       '_set_qos_policy_group_on_volume'
+                                       ) as mock_set_qos:
+                    volume_info = self._driver.create_volume(fake_volume)
+                    self.assertEqual(volume_info.get('provider_location'),
+                                     'localhost:myshare')
+                    mock_set_qos.assert_called_once_with(fake_volume,
+                                                         fake_share,
+                                                         fake_qos_policy)
 
     def test_copy_img_to_vol_copyoffload_success(self):
         drv = self._driver
@@ -971,7 +1082,7 @@ class NetappDirectCmodeNfsDriverOnlyTestCase(test.TestCase):
         drv._execute.assert_called_once_with('cof_path', 'ip1', 'ip1',
                                              '/openstack/img-cache-imgid',
                                              '/exp_path/name',
-                                             run_as_root=False,
+                                             run_as_root=True,
                                              check_exit_code=0)
         drv._post_clone_image.assert_called_with(volume)
         drv._get_provider_location.assert_called_with('vol_id')
@@ -1089,6 +1200,14 @@ class NetappDirect7modeNfsDriverTestCase(NetappDirectCmodeNfsDriverTestCase):
 
         return mox
 
+    def test_create_volume_no_pool_specified(self):
+        drv = self._driver
+        drv.ssc_enabled = False
+        host = 'hostname@backend'  # missing pool
+        with mock.patch.object(drv, '_ensure_shares_mounted'):
+            self.assertRaises(exception.InvalidHost,
+                              self._driver.create_volume, FakeVolume(host, 1))
+
     def test_check_for_setup_error_version(self):
         drv = self._driver
         drv._client = api.NaServer("127.0.0.1")
@@ -1196,3 +1315,13 @@ class NetappDirect7modeNfsDriverTestCase(NetappDirectCmodeNfsDriverTestCase):
                 raise
 
         mox.VerifyAll()
+
+    def test_get_pool(self):
+        pool = self._driver.get_pool({'provider_location': 'fake-share'})
+        self.assertEqual(pool, 'fake-share')
+
+    def _set_config(self, configuration):
+        super(NetappDirect7modeNfsDriverTestCase, self)._set_config(
+            configuration)
+        configuration.netapp_storage_family = 'ontap_7mode'
+        return configuration

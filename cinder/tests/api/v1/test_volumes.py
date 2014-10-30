@@ -33,7 +33,7 @@ from cinder import utils
 from cinder.volume import api as volume_api
 
 
-NS = '{http://docs.openstack.org/volume/api/v1}'
+NS = '{http://docs.openstack.org/api/openstack-block-storage/1.0/content}'
 
 TEST_SNAPSHOT_UUID = '00000000-0000-0000-0000-000000000001'
 
@@ -352,7 +352,7 @@ class VolumeApiTest(test.TestCase):
                 'device': '/'
             }],
             'bootable': 'false',
-            'volume_type': 'None',
+            'volume_type': None,
             'snapshot_id': None,
             'source_volid': None,
             'metadata': {'key': 'value',
@@ -446,7 +446,7 @@ class VolumeApiTest(test.TestCase):
                                                   'id': '1',
                                                   'volume_id': '1'}],
                                  'bootable': 'false',
-                                 'volume_type': 'None',
+                                 'volume_type': None,
                                  'snapshot_id': None,
                                  'source_volid': None,
                                  'metadata': {'key': 'value',
@@ -515,7 +515,7 @@ class VolumeApiTest(test.TestCase):
                                                   'id': '1',
                                                   'volume_id': '1'}],
                                  'bootable': 'false',
-                                 'volume_type': 'None',
+                                 'volume_type': None,
                                  'snapshot_id': None,
                                  'source_volid': None,
                                  'metadata': {'key': 'value',
@@ -677,7 +677,7 @@ class VolumeApiTest(test.TestCase):
                                                 'id': '1',
                                                 'volume_id': '1'}],
                                'bootable': 'false',
-                               'volume_type': 'None',
+                               'volume_type': None,
                                'snapshot_id': None,
                                'source_volid': None,
                                'metadata': {'key': 'value',

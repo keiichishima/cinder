@@ -24,6 +24,7 @@ from cinder.openstack.common.scheduler.weights import HostWeightHandler
 from cinder.scheduler.weights.capacity import CapacityWeigher
 from cinder import test
 from cinder.tests.scheduler import fakes
+from cinder.volume import utils
 
 CONF = cfg.CONF
 
@@ -58,11 +59,13 @@ class CapacityWeigherTestCase(test.TestCase):
         # host2: free_capacity_gb=300, free=300*(1-0.1)
         # host3: free_capacity_gb=512, free=256
         # host4: free_capacity_gb=200, free=200*(1-0.05)
+        # host5: free_capacity_gb=unknown free=-1
 
         # so, host1 should win:
         weighed_host = self._get_weighed_host(hostinfo_list)
         self.assertEqual(weighed_host.weight, 921.0)
-        self.assertEqual(weighed_host.obj.host, 'host1')
+        self.assertEqual(
+            utils.extract_host(weighed_host.obj.host), 'host1')
 
     def test_capacity_weight_multiplier1(self):
         self.flags(capacity_weight_multiplier=-1.0)
@@ -72,11 +75,13 @@ class CapacityWeigherTestCase(test.TestCase):
         # host2: free_capacity_gb=300, free=-300*(1-0.1)
         # host3: free_capacity_gb=512, free=-256
         # host4: free_capacity_gb=200, free=-200*(1-0.05)
+        # host5: free_capacity_gb=unknown free=-float('inf')
 
         # so, host4 should win:
         weighed_host = self._get_weighed_host(hostinfo_list)
         self.assertEqual(weighed_host.weight, -190.0)
-        self.assertEqual(weighed_host.obj.host, 'host4')
+        self.assertEqual(
+            utils.extract_host(weighed_host.obj.host), 'host4')
 
     def test_capacity_weight_multiplier2(self):
         self.flags(capacity_weight_multiplier=2.0)
@@ -86,8 +91,10 @@ class CapacityWeigherTestCase(test.TestCase):
         # host2: free_capacity_gb=300, free=300*(1-0.1)*2
         # host3: free_capacity_gb=512, free=256*2
         # host4: free_capacity_gb=200, free=200*(1-0.05)*2
+        # host5: free_capacity_gb=unknown free=-2
 
         # so, host1 should win:
         weighed_host = self._get_weighed_host(hostinfo_list)
         self.assertEqual(weighed_host.weight, 921.0 * 2)
-        self.assertEqual(weighed_host.obj.host, 'host1')
+        self.assertEqual(
+            utils.extract_host(weighed_host.obj.host), 'host1')

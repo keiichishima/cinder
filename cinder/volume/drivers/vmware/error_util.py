@@ -78,3 +78,18 @@ class InvalidAdapterTypeException(VMwareDriverException):
 class InvalidDiskTypeException(VMwareDriverException):
     """Thrown when the disk type is invalid."""
     message = _("Invalid disk type: %(disk_type)s.")
+
+
+class ImageTransferException(VMwareDriverException):
+    """Thrown when there is an error during image transfer."""
+    message = _("Error occurred during image transfer.")
+
+
+class VirtualDiskNotFoundException(VMwareDriverException):
+    """Thrown when virtual disk is not found."""
+    message = _("There is no virtual disk device.")
+
+
+class ProfileNotFoundException(VMwareDriverException):
+    """Thrown when the given storage profile cannot be found."""
+    message = _("Storage profile: %(storage_profile)s not found.")

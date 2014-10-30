@@ -52,24 +52,43 @@ CONF = cfg.CONF
 CONF.register_opts(image_helper_opt)
 
 
-def qemu_img_info(path):
-    """Return an object containing the parsed output from qemu-img info."""
+def qemu_img_info(path, run_as_root=True):
+    """Return a object containing the parsed output from qemu-img info."""
     cmd = ('env', 'LC_ALL=C', 'qemu-img', 'info', path)
     if os.name == 'nt':
         cmd = cmd[2:]
-    out, err = utils.execute(*cmd, run_as_root=True)
+    out, err = utils.execute(*cmd, run_as_root=run_as_root)
     return imageutils.QemuImgInfo(out)
 
 
-def convert_image(source, dest, out_format, bps_limit=None):
+def convert_image(source, dest, out_format, bps_limit=None, run_as_root=True):
     """Convert image to other format."""
+
+    cmd = ('qemu-img', 'convert',
+           '-O', out_format, source, dest)
+
+    # Check whether O_DIRECT is supported and set '-t none' if it is
+    # This is needed to ensure that all data hit the device before
+    # it gets unmapped remotely from the host for some backends
+    # Reference Bug: #1363016
+
+    # NOTE(jdg): In the case of file devices qemu does the
+    # flush properly and more efficiently than would be done
+    # setting O_DIRECT, so check for that and skip the
+    # setting for non BLK devs
+    if (utils.is_blk_device(dest) and
+            volume_utils.check_for_odirect_support(source,
+                                                   dest,
+                                                   'oflag=direct')):
+        cmd = ('qemu-img', 'convert',
+               '-t', 'none',
+               '-O', out_format, source, dest)
+
     start_time = timeutils.utcnow()
-    cmd = ('qemu-img', 'convert', '-O', out_format, source, dest)
     cgcmd = volume_utils.setup_blkio_cgroup(source, dest, bps_limit)
     if cgcmd:
         cmd = tuple(cgcmd) + cmd
-        cmd += ('-t', 'none')  # required to enable ratelimit by blkio cgroup
-    utils.execute(*cmd, run_as_root=True)
+    utils.execute(*cmd, run_as_root=run_as_root)
 
     duration = timeutils.delta_seconds(start_time, timeutils.utcnow())
 
@@ -123,12 +142,13 @@ def fetch(context, image_service, image_id, path, _user_id, _project_id):
 
 
 def fetch_verify_image(context, image_service, image_id, dest,
-                       user_id=None, project_id=None, size=None):
+                       user_id=None, project_id=None, size=None,
+                       run_as_root=True):
     fetch(context, image_service, image_id, dest,
           None, None)
 
     with fileutils.remove_path_on_error(dest):
-        data = qemu_img_info(dest)
+        data = qemu_img_info(dest, run_as_root=run_as_root)
         fmt = data.file_format
         if fmt is None:
             raise exception.ImageUnacceptable(
@@ -154,21 +174,24 @@ def fetch_verify_image(context, image_service, image_id, dest,
 
 def fetch_to_vhd(context, image_service,
                  image_id, dest, blocksize,
-                 user_id=None, project_id=None):
+                 user_id=None, project_id=None, run_as_root=True):
     fetch_to_volume_format(context, image_service, image_id, dest, 'vpc',
-                           blocksize, user_id, project_id)
+                           blocksize, user_id, project_id,
+                           run_as_root=run_as_root)
 
 
 def fetch_to_raw(context, image_service,
                  image_id, dest, blocksize,
-                 user_id=None, project_id=None, size=None):
+                 user_id=None, project_id=None, size=None, run_as_root=True):
     fetch_to_volume_format(context, image_service, image_id, dest, 'raw',
-                           blocksize, user_id, project_id, size)
+                           blocksize, user_id, project_id, size,
+                           run_as_root=run_as_root)
 
 
 def fetch_to_volume_format(context, image_service,
                            image_id, dest, volume_format, blocksize,
-                           user_id=None, project_id=None, size=None):
+                           user_id=None, project_id=None, size=None,
+                           run_as_root=True):
     if (CONF.image_conversion_dir and not
             os.path.exists(CONF.image_conversion_dir)):
         os.makedirs(CONF.image_conversion_dir)
@@ -189,7 +212,7 @@ def fetch_to_volume_format(context, image_service,
         # whole function.
         try:
             # Use the empty tmp file to make sure qemu_img_info works.
-            qemu_img_info(tmp)
+            qemu_img_info(tmp, run_as_root=run_as_root)
         except processutils.ProcessExecutionError:
             qemu_img = False
             if image_meta:
@@ -222,7 +245,7 @@ def fetch_to_volume_format(context, image_service,
             volume_utils.copy_volume(tmp, dest, image_meta['size'], blocksize)
             return
 
-        data = qemu_img_info(tmp)
+        data = qemu_img_info(tmp, run_as_root=run_as_root)
         virt_size = data.virtual_size / units.Gi
 
         # NOTE(xqueralt): If the image virtual size doesn't fit in the
@@ -257,9 +280,10 @@ def fetch_to_volume_format(context, image_service,
         LOG.debug("%s was %s, converting to %s " % (image_id, fmt,
                                                     volume_format))
         convert_image(tmp, dest, volume_format,
-                      bps_limit=CONF.volume_copy_bps_limit)
+                      bps_limit=CONF.volume_copy_bps_limit,
+                      run_as_root=run_as_root)
 
-        data = qemu_img_info(dest)
+        data = qemu_img_info(dest, run_as_root=run_as_root)
         if data.file_format != volume_format:
             raise exception.ImageUnacceptable(
                 image_id=image_id,
@@ -270,7 +294,7 @@ def fetch_to_volume_format(context, image_service,
 
 
 def upload_volume(context, image_service, image_meta, volume_path,
-                  volume_format='raw'):
+                  volume_format='raw', run_as_root=True):
     image_id = image_meta['id']
     if (image_meta['disk_format'] == volume_format):
         LOG.debug("%s was %s, no need to convert to %s" %
@@ -294,9 +318,10 @@ def upload_volume(context, image_service, image_meta, volume_path,
         LOG.debug("%s was %s, converting to %s" %
                   (image_id, volume_format, image_meta['disk_format']))
         convert_image(volume_path, tmp, image_meta['disk_format'],
-                      bps_limit=CONF.volume_copy_bps_limit)
+                      bps_limit=CONF.volume_copy_bps_limit,
+                      run_as_root=run_as_root)
 
-        data = qemu_img_info(tmp)
+        data = qemu_img_info(tmp, run_as_root=run_as_root)
         if data.file_format != image_meta['disk_format']:
             raise exception.ImageUnacceptable(
                 image_id=image_id,

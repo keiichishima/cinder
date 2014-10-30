@@ -96,6 +96,14 @@ def as_int(obj, quiet=True):
     return obj
 
 
+def is_int_like(val):
+    """Check if a value looks like an int."""
+    try:
+        return str(int(val)) == str(val)
+    except Exception:
+        return False
+
+
 def check_exclusive_options(**kwargs):
     """Checks that only one of the provided options is actually not-none.
 
@@ -493,26 +501,6 @@ def sanitize_hostname(hostname):
     return hostname
 
 
-def read_cached_file(filename, cache_info, reload_func=None):
-    """Read from a file if it has been modified.
-
-    :param cache_info: dictionary to hold opaque cache.
-    :param reload_func: optional function to be called with data when
-                        file is reloaded due to a modification.
-
-    :returns: data from file
-
-    """
-    mtime = os.path.getmtime(filename)
-    if not cache_info or mtime != cache_info.get('mtime'):
-        with open(filename) as fap:
-            cache_info['data'] = fap.read()
-        cache_info['mtime'] = mtime
-        if reload_func:
-            reload_func(cache_info['data'])
-    return cache_info['data']
-
-
 def hash_file(file_like_object):
     """Generate a hash for the contents of a file."""
     checksum = hashlib.sha1()
@@ -769,3 +757,13 @@ def remove_invalid_filter_options(context, filters,
     LOG.debug(log_msg)
     for opt in unknown_options:
         del filters[opt]
+
+
+def is_blk_device(dev):
+    try:
+        if stat.S_ISBLK(os.stat(dev).st_mode):
+            return True
+        return False
+    except Exception:
+        LOG.debug('Path %s not found in is_blk_device check' % dev)
+        return False

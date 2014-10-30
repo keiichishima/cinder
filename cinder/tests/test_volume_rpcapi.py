@@ -147,6 +147,7 @@ class VolumeRpcAPITestCase(test.TestCase):
                               image_id='fake_image_id',
                               source_volid='fake_src_id',
                               source_replicaid='fake_replica_id',
+                              consistencygroup_id='fake_cg_id',
                               version='1.4')
 
     def test_create_volume_serialization(self):
@@ -162,6 +163,7 @@ class VolumeRpcAPITestCase(test.TestCase):
                               image_id='fake_image_id',
                               source_volid='fake_src_id',
                               source_replicaid='fake_replica_id',
+                              consistencygroup_id='fake_cg_id',
                               version='1.4')
 
     def test_delete_volume(self):
@@ -232,7 +234,7 @@ class VolumeRpcAPITestCase(test.TestCase):
 
     def test_accept_transfer(self):
         self._test_volume_api('accept_transfer',
-                              rpc_method='cast',
+                              rpc_method='call',
                               volume=self.fake_volume,
                               new_user='e5565fd0-06c8-11e3-'
                                        '8ffd-0800200c9b77',

@@ -84,6 +84,7 @@ def _create_glance_client(context, netloc, use_ssl,
         # https specific params
         params['insecure'] = CONF.glance_api_insecure
         params['ssl_compression'] = CONF.glance_api_ssl_compression
+        params['cacert'] = CONF.glance_ca_certificates_file
     else:
         scheme = 'http'
     if CONF.auth_strategy == 'keystone':
@@ -126,6 +127,13 @@ class GlanceClientWrapper(object):
             self.client = None
         self.api_servers = None
         self.version = version
+
+        if CONF.glance_num_retries < 0:
+            LOG.warning(_(
+                "glance_num_retries shouldn't be a negative value. "
+                "The number of retries will be set to 0 until this is"
+                "corrected in the cinder.conf."))
+            CONF.set_override('glance_num_retries', 0)
 
     def _create_static_client(self, context, netloc, use_ssl, version):
         """Create a client that we'll use for every call."""

@@ -41,8 +41,12 @@ class _ExportMixin(object):
                                                        volume,
                                                        max_targets)
 
-        chap_username = utils.generate_username()
-        chap_password = utils.generate_password()
+        current_chap_auth = self._get_target_chap_auth(iscsi_name)
+        if current_chap_auth:
+            (chap_username, chap_password) = current_chap_auth
+        else:
+            chap_username = utils.generate_username()
+            chap_password = utils.generate_password()
         chap_auth = self._iscsi_authentication('IncomingUser',
                                                chap_username,
                                                chap_password)
@@ -58,6 +62,8 @@ class _ExportMixin(object):
         data = {}
         data['location'] = self._iscsi_location(
             conf.iscsi_ip_address, tid, iscsi_name, conf.iscsi_port, lun)
+
+        LOG.debug('Set provider_location to: %s', data['location'])
         data['auth'] = self._iscsi_authentication(
             'CHAP', chap_username, chap_password)
         return data

@@ -344,10 +344,8 @@ class EMCVMAXCommon(object):
         :param volume: volume Object
         :param connector: the connector Object
         :returns: deviceInfoDict, device information tuple
-        :returns: ipAddress, required for ISCSI command
         :raises: VolumeBackendAPIException
         """
-        ipAddress = None
         extraSpecs = self._initial_setup(volume)
 
         volumeName = volume['name']
@@ -390,15 +388,8 @@ class EMCVMAXCommon(object):
                                      % {'vol': volumeName})
                 raise exception.VolumeBackendAPIException(
                     data=exception_message)
-        if self.protocol.lower() == 'iscsi':
-            ipAddress = self.utils.find_ip_protocol_endpoint(
-                self.conn, deviceInfoDict['storagesystem'])
-            if ipAddress is None:
-                LOG.info(_("Unable to get iscsi IP address "
-                           "for storagesystem %(storageSystem)s")
-                         % {'storageSystem': deviceInfoDict['storagesystem']})
 
-        return deviceInfoDict, ipAddress
+        return deviceInfoDict
 
     def _wrap_find_device_number(self, volume, connector):
         """Aid for unit testing
@@ -652,7 +643,7 @@ class EMCVMAXCommon(object):
                 'QoS_support': False,
                 'volume_backend_name': backendName or self.__class__.__name__,
                 'vendor_name': "EMC",
-                'driver_version': '1.0',
+                'driver_version': '2.0',
                 'storage_protocol': 'unknown',
                 'location_info': location_info}
 
@@ -1273,6 +1264,8 @@ class EMCVMAXCommon(object):
         volumename = volume['name']
 
         loc = volume['provider_location']
+        if self.conn is None:
+            self.conn = self._get_ecom_connection()
         if isinstance(loc, six.string_types):
             name = eval(loc)
 
@@ -1534,7 +1527,7 @@ class EMCVMAXCommon(object):
         self.conn = self._get_ecom_connection()
 
     def _initial_setup(self, volume):
-        """Necessary setup to accummulate the relevant information.
+        """Necessary setup to accumulate the relevant information.
 
         The volume object has a host in which we can parse the
         config group name. The config group name is the key to our EMC
@@ -1753,7 +1746,7 @@ class EMCVMAXCommon(object):
         composite volume
 
         :param conn: the connection information to the ecom server
-        :param storageConfigService: thestorage config service instance name
+        :param storageConfigService: the storage config service instance name
         :param compositeVolumeInstanceName: the composite volume instance name
         :param additionalSize: the size you want to increase the volume by
         :returns: volume instance modifiedCompositeVolumeInstance
@@ -2194,3 +2187,54 @@ class EMCVMAXCommon(object):
                      'connector': connector})
 
         return numVolumesMapped
+
+    def get_target_wwns_from_masking_view(
+            self, storageSystem, volume, connector):
+        """Find target WWNs via the masking view.
+
+        :param storageSystem: the storage system name
+        :param volume: volume to be attached
+        :param connector: the connector dict
+        :returns: targetWwns, the target WWN list
+        """
+        targetWwns = []
+        mvInstanceName = self.get_masking_view_by_volume(volume)
+        targetWwns = self.masking.get_target_wwns(self.conn, mvInstanceName)
+        LOG.info("Target wwns in masking view %(maskingView)s: %(targetWwns)s"
+                 % {'maskingView': mvInstanceName,
+                    'targetWwns': str(targetWwns)})
+        return targetWwns
+
+    def get_port_group_from_masking_view(self, maskingViewInstanceName):
+        """Find port group that is part of a masking view.
+
+        :param maskingViewInstanceName: the owning masking view
+        :returns: port group instance name
+        """
+        return self.masking.get_port_group_from_masking_view(
+            self.conn, maskingViewInstanceName)
+
+    def get_masking_view_by_volume(self, volume):
+        """Given volume, retrieve the masking view instance name
+
+        :param volume: the volume
+        :param mvInstanceName: masking view instance name
+        :returns maskingviewInstanceName
+        """
+        LOG.debug("Finding Masking View for volume %(volume)s"
+                  % {'volume': volume})
+        volumeInstance = self._find_lun(volume)
+        return self.masking.get_masking_view_by_volume(
+            self.conn, volumeInstance)
+
+    def get_masking_views_by_port_group(self, portGroupInstanceName):
+        """Given port group, retrieve the masking view instance name
+
+        :param : the volume
+        :param mvInstanceName: masking view instance name
+        :returns: maksingViewInstanceNames
+        """
+        LOG.debug("Finding Masking Views for port group %(pg)s"
+                  % {'pg': portGroupInstanceName})
+        return self.masking.get_masking_views_by_port_group(
+            self.conn, portGroupInstanceName)

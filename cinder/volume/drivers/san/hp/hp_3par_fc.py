@@ -34,6 +34,7 @@ try:
 except ImportError:
     hpexceptions = None
 
+from cinder import exception
 from cinder.i18n import _
 from cinder.openstack.common import log as logging
 from cinder import utils
@@ -66,16 +67,22 @@ class HP3PARFCDriver(cinder.volume.driver.FibreChannelDriver):
         2.0.4 - Added support for managing/unmanaging of volumes
         2.0.5 - Only remove FC Zone on last volume detach
         2.0.6 - Added support for volume retype
+        2.0.7 - Only one FC port is used when a single FC path
+                is present.  bug #1360001
+        2.0.8 - Fixing missing login/logout around attach/detach bug #1367429
+        2.0.9 - Add support for pools with model update
+        2.0.10 - Migrate without losing type settings bug #1356608
 
     """
 
-    VERSION = "2.0.6"
+    VERSION = "2.0.10"
 
     def __init__(self, *args, **kwargs):
         super(HP3PARFCDriver, self).__init__(*args, **kwargs)
         self.common = None
         self.configuration.append_config_values(hpcommon.hp3par_opts)
         self.configuration.append_config_values(san.san_opts)
+        self.lookup_service = fczm_utils.create_lookup_service()
 
     def _init_common(self):
         return hpcommon.HP3PARCommon(self.configuration)
@@ -114,8 +121,7 @@ class HP3PARFCDriver(cinder.volume.driver.FibreChannelDriver):
     def create_volume(self, volume):
         self.common.client_login()
         try:
-            metadata = self.common.create_volume(volume)
-            return {'metadata': metadata}
+            return self.common.create_volume(volume)
         finally:
             self.common.client_logout()
 
@@ -123,8 +129,7 @@ class HP3PARFCDriver(cinder.volume.driver.FibreChannelDriver):
     def create_cloned_volume(self, volume, src_vref):
         self.common.client_login()
         try:
-            new_vol = self.common.create_cloned_volume(volume, src_vref)
-            return {'metadata': new_vol}
+            return self.common.create_cloned_volume(volume, src_vref)
         finally:
             self.common.client_logout()
 
@@ -144,9 +149,8 @@ class HP3PARFCDriver(cinder.volume.driver.FibreChannelDriver):
         """
         self.common.client_login()
         try:
-            metadata = self.common.create_volume_from_snapshot(volume,
-                                                               snapshot)
-            return {'metadata': metadata}
+            return self.common.create_volume_from_snapshot(volume,
+                                                           snapshot)
         finally:
             self.common.client_logout()
 
@@ -210,11 +214,20 @@ class HP3PARFCDriver(cinder.volume.driver.FibreChannelDriver):
             # we have to make sure we have a host
             host = self._create_host(volume, connector)
 
-            # now that we have a host, create the VLUN
-            vlun = self.common.create_vlun(volume, host)
+            target_wwns, init_targ_map, numPaths = \
+                self._build_initiator_target_map(connector)
 
-            target_wwns, init_targ_map = self._build_initiator_target_map(
-                connector)
+            # now that we have a host, create the VLUN
+            if self.lookup_service is not None and numPaths == 1:
+                nsp = None
+                active_fc_port_list = self.common.get_active_fc_target_ports()
+                for port in active_fc_port_list:
+                    if port['portWWN'].lower() == target_wwns[0].lower():
+                        nsp = port['nsp']
+                        break
+                vlun = self.common.create_vlun(volume, host, nsp)
+            else:
+                vlun = self.common.create_vlun(volume, host)
 
             info = {'driver_volume_type': 'fibre_channel',
                     'data': {'target_lun': vlun['lun'],
@@ -244,8 +257,9 @@ class HP3PARFCDriver(cinder.volume.driver.FibreChannelDriver):
                 # No more exports for this host.
                 LOG.info(_("Need to remove FC Zone, building initiator "
                          "target map"))
-                target_wwns, init_targ_map = self._build_initiator_target_map(
-                    connector)
+
+                target_wwns, init_targ_map, numPaths = \
+                    self._build_initiator_target_map(connector)
 
                 info['data'] = {'target_wwn': target_wwns,
                                 'initiator_target_map': init_targ_map}
@@ -258,18 +272,41 @@ class HP3PARFCDriver(cinder.volume.driver.FibreChannelDriver):
         """Build the target_wwns and the initiator target map."""
 
         fc_ports = self.common.get_active_fc_target_ports()
+        all_target_wwns = []
         target_wwns = []
+        init_targ_map = {}
+        numPaths = 0
 
         for port in fc_ports:
-            target_wwns.append(port['portWWN'])
+            all_target_wwns.append(port['portWWN'])
 
-        initiator_wwns = connector['wwpns']
+        if self.lookup_service is not None:
+            # use FC san lookup to determine which NSPs to use
+            # for the new VLUN.
+            dev_map = self.lookup_service.get_device_mapping_from_network(
+                connector['wwpns'],
+                all_target_wwns)
 
-        init_targ_map = {}
-        for initiator in initiator_wwns:
-            init_targ_map[initiator] = target_wwns
+            for fabric_name in dev_map:
+                fabric = dev_map[fabric_name]
+                target_wwns += fabric['target_port_wwn_list']
+                for initiator in fabric['initiator_port_wwn_list']:
+                    if initiator not in init_targ_map:
+                        init_targ_map[initiator] = []
+                    init_targ_map[initiator] += fabric['target_port_wwn_list']
+                    init_targ_map[initiator] = list(set(
+                        init_targ_map[initiator]))
+                    for target in init_targ_map[initiator]:
+                        numPaths += 1
+            target_wwns = list(set(target_wwns))
+        else:
+            initiator_wwns = connector['wwpns']
+            target_wwns = all_target_wwns
 
-        return target_wwns, init_targ_map
+            for initiator in initiator_wwns:
+                init_targ_map[initiator] = target_wwns
+
+        return target_wwns, init_targ_map, numPaths
 
     def _create_3par_fibrechan_host(self, hostname, wwns, domain, persona_id):
         """Create a 3PAR host.
@@ -399,11 +436,19 @@ class HP3PARFCDriver(cinder.volume.driver.FibreChannelDriver):
     @utils.synchronized('3par', external=True)
     def attach_volume(self, context, volume, instance_uuid, host_name,
                       mountpoint):
-        self.common.attach_volume(volume, instance_uuid)
+        self.common.client_login()
+        try:
+            self.common.attach_volume(volume, instance_uuid)
+        finally:
+            self.common.client_logout()
 
     @utils.synchronized('3par', external=True)
     def detach_volume(self, context, volume):
-        self.common.detach_volume(volume)
+        self.common.client_login()
+        try:
+            self.common.detach_volume(volume)
+        finally:
+            self.common.client_logout()
 
     @utils.synchronized('3par', external=True)
     def retype(self, context, volume, new_type, diff, host):
@@ -416,8 +461,27 @@ class HP3PARFCDriver(cinder.volume.driver.FibreChannelDriver):
 
     @utils.synchronized('3par', external=True)
     def migrate_volume(self, context, volume, host):
+
+        if volume['status'] == 'in-use':
+            protocol = host['capabilities']['storage_protocol']
+            if protocol != 'FC':
+                LOG.debug("3PAR FC driver cannot migrate in-use volume "
+                          "to a host with storage_protocol=%s." % protocol)
+                return False, None
+
         self.common.client_login()
         try:
             return self.common.migrate_volume(volume, host)
+        finally:
+            self.common.client_logout()
+
+    def get_pool(self, volume):
+        self.common.client_login()
+        try:
+            return self.common.get_cpg(volume)
+        except hpexceptions.HTTPNotFound:
+            reason = (_("Volume %s doesn't exist on array.") % volume)
+            LOG.error(reason)
+            raise exception.InvalidVolume(reason)
         finally:
             self.common.client_logout()

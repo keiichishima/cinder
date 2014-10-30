@@ -81,7 +81,9 @@ class GlusterFsDriverTestCase(test.TestCase):
     TEST_LOCAL_PATH = '/mnt/glusterfs/volume-123'
     TEST_FILE_NAME = 'test.txt'
     TEST_SHARES_CONFIG_FILE = '/etc/cinder/test-shares.conf'
+    TEST_TMP_FILE = '/tmp/tempfile'
     VOLUME_UUID = 'abcdefab-cdef-abcd-efab-cdefabcdefab'
+    VOLUME_NAME = 'volume-%s' % VOLUME_UUID
     SNAP_UUID = 'bacadaca-baca-daca-baca-dacadacadaca'
     SNAP_UUID_2 = 'bebedede-bebe-dede-bebe-dedebebedede'
 
@@ -96,6 +98,8 @@ class GlusterFsDriverTestCase(test.TestCase):
             self.TEST_MNT_POINT_BASE
         self._configuration.glusterfs_sparsed_volumes = True
         self._configuration.glusterfs_qcow2_volumes = False
+        self._configuration.nas_secure_file_permissions = 'false'
+        self._configuration.nas_secure_file_operations = 'false'
 
         self.stubs = stubout.StubOutForTesting()
         self._driver =\
@@ -978,263 +982,6 @@ class GlusterFsDriverTestCase(test.TestCase):
 
         mox.VerifyAll()
 
-    def test_create_snapshot(self):
-        (mox, drv) = self._mox, self._driver
-
-        self.stub_out_not_replaying(drv, '_ensure_share_mounted')
-        mox.StubOutWithMock(drv, '_create_qcow2_snap_file')
-        mox.StubOutWithMock(drv, '_read_info_file')
-        mox.StubOutWithMock(drv, '_write_info_file')
-
-        volume = self._simple_volume()
-        snap_ref = {'name': 'test snap',
-                    'volume_id': self.VOLUME_UUID,
-                    'volume': volume,
-                    'id': self.SNAP_UUID}
-
-        mox.StubOutWithMock(drv, '_execute')
-
-        vol_filename = 'volume-%s' % self.VOLUME_UUID
-
-        hashed = drv._get_hash_str(self.TEST_EXPORT1)
-        vol_path = '%s/%s/%s' % (self.TEST_MNT_POINT_BASE,
-                                 hashed,
-                                 vol_filename)
-        snap_path = '%s.%s' % (vol_path, self.SNAP_UUID)
-        info_path = '%s%s' % (vol_path, '.info')
-
-        info_dict = {'active': vol_filename}
-        drv._read_info_file(info_path, empty_if_missing=True).\
-            AndReturn(info_dict)
-
-        drv._create_qcow2_snap_file(snap_ref, vol_filename, snap_path)
-
-        drv._read_info_file(info_path, empty_if_missing=True).\
-            AndReturn(info_dict)
-
-        # SNAP_UUID_2 has been removed from dict.
-        info_file_dict = {'active': 'volume-%s.%s' %
-                          (self.VOLUME_UUID, self.SNAP_UUID),
-                          self.SNAP_UUID: 'volume-%s.%s' %
-                          (self.VOLUME_UUID, self.SNAP_UUID)}
-
-        drv._write_info_file(info_path, info_file_dict)
-
-        mox.ReplayAll()
-
-        drv.create_snapshot(snap_ref)
-
-        mox.VerifyAll()
-
-    def test_delete_snapshot_bottom(self):
-        """Multiple snapshots exist.
-
-           In this test, path (volume-<uuid>) is backed by
-            snap_path (volume-<uuid>.<snap_uuid>) which is backed by
-            snap_path_2 (volume-<uuid>.<snap_uuid_2>).
-
-           Delete the snapshot identified by SNAP_UUID_2.
-
-           Chain goes from
-                               (SNAP_UUID)      (SNAP_UUID_2)
-             volume-abc -> volume-abc.baca -> volume-abc.bebe
-           to
-                               (SNAP_UUID)
-             volume-abc -> volume-abc.baca
-        """
-        (mox, drv) = self._mox, self._driver
-
-        hashed = drv._get_hash_str(self.TEST_EXPORT1)
-        volume_dir = os.path.join(self.TEST_MNT_POINT_BASE, hashed)
-        volume_path = '%s/%s/volume-%s' % (self.TEST_MNT_POINT_BASE,
-                                           hashed,
-                                           self.VOLUME_UUID)
-        volume_filename = 'volume-%s' % self.VOLUME_UUID
-
-        snap_path_2 = '%s.%s' % (volume_path, self.SNAP_UUID_2)
-        snap_file = '%s.%s' % (volume_filename, self.SNAP_UUID)
-        snap_file_2 = '%s.%s' % (volume_filename, self.SNAP_UUID_2)
-        info_path = '%s%s' % (volume_path, '.info')
-
-        qemu_img_info_output = """image: volume-%s.%s
-        file format: qcow2
-        virtual size: 1.0G (1073741824 bytes)
-        disk size: 173K
-        backing file: %s
-        """ % (self.VOLUME_UUID, self.SNAP_UUID, volume_filename)
-
-        mox.StubOutWithMock(drv, '_execute')
-        mox.StubOutWithMock(drv, '_read_file')
-        mox.StubOutWithMock(drv, '_read_info_file')
-        mox.StubOutWithMock(drv, '_get_backing_chain_for_path')
-        mox.StubOutWithMock(drv, '_get_matching_backing_file')
-        mox.StubOutWithMock(drv, '_write_info_file')
-        mox.StubOutWithMock(drv, '_ensure_share_writable')
-        mox.StubOutWithMock(image_utils, 'qemu_img_info')
-
-        drv._ensure_share_writable(volume_dir)
-
-        img_info = imageutils.QemuImgInfo(qemu_img_info_output)
-        image_utils.qemu_img_info(snap_path_2).AndReturn(img_info)
-
-        info_file_dict = {'active': snap_file_2,
-                          self.SNAP_UUID_2: snap_file_2,
-                          self.SNAP_UUID: snap_file}
-
-        snap_ref = {'name': 'test snap',
-                    'volume_id': self.VOLUME_UUID,
-                    'volume': self._simple_volume(),
-                    'id': self.SNAP_UUID_2}
-
-        drv._read_info_file(info_path, empty_if_missing=True).\
-            AndReturn(info_file_dict)
-
-        drv._execute('qemu-img', 'commit', snap_path_2, run_as_root=True)
-
-        drv._execute('rm', '-f', snap_path_2, run_as_root=True)
-
-        drv._read_info_file(info_path, empty_if_missing=True).\
-            AndReturn(info_file_dict)
-
-        drv._read_info_file(info_path).AndReturn(info_file_dict)
-
-        drv._write_info_file(info_path, info_file_dict)
-
-        mox.ReplayAll()
-
-        drv.delete_snapshot(snap_ref)
-
-        mox.VerifyAll()
-
-    def test_delete_snapshot_middle(self):
-        """Multiple snapshots exist.
-
-           In this test, path (volume-<uuid>) is backed by
-            snap_path (volume-<uuid>.<snap_uuid>) which is backed by
-            snap_path_2 (volume-<uuid>.<snap_uuid_2>).
-
-           Delete the snapshot identified with SNAP_UUID.
-
-           Chain goes from
-                               (SNAP_UUID)      (SNAP_UUID_2)
-             volume-abc -> volume-abc.baca -> volume-abc.bebe
-           to                (SNAP_UUID_2)
-             volume-abc -> volume-abc.bebe
-        """
-        (mox, drv) = self._mox, self._driver
-
-        volume = self._simple_volume()
-
-        hashed = drv._get_hash_str(self.TEST_EXPORT1)
-        volume_file = 'volume-%s' % self.VOLUME_UUID
-        volume_dir = os.path.join(self.TEST_MNT_POINT_BASE, hashed)
-        volume_path = '%s/%s/%s' % (self.TEST_MNT_POINT_BASE,
-                                    hashed,
-                                    volume_file)
-
-        snap_path = '%s.%s' % (volume_path, self.SNAP_UUID)
-        snap_file = 'volume-%s.%s' % (self.VOLUME_UUID, self.SNAP_UUID)
-        snap_path_2 = '%s.%s' % (volume_path, self.SNAP_UUID_2)
-        snap_file_2 = 'volume-%s.%s' % (self.VOLUME_UUID, self.SNAP_UUID_2)
-
-        qemu_img_info_output_snap_1 = """image: volume-%s.%s
-        file format: qcow2
-        virtual size: 1.0G (1073741824 bytes)
-        disk size: 122K
-        backing file: %s
-        """ % (self.VOLUME_UUID, self.SNAP_UUID,
-               'volume-%s.%s' % (self.VOLUME_UUID, self.SNAP_UUID))
-
-        mox.StubOutWithMock(drv, '_execute')
-        mox.StubOutWithMock(drv, '_read_info_file')
-        mox.StubOutWithMock(drv, '_write_info_file')
-        mox.StubOutWithMock(drv, '_get_backing_chain_for_path')
-        mox.StubOutWithMock(drv, 'get_active_image_from_info')
-        mox.StubOutWithMock(drv, '_ensure_share_writable')
-        mox.StubOutWithMock(image_utils, 'qemu_img_info')
-
-        info_file_dict = {self.SNAP_UUID_2: 'volume-%s.%s' %
-                          (self.VOLUME_UUID, self.SNAP_UUID_2),
-                          self.SNAP_UUID: 'volume-%s.%s' %
-                          (self.VOLUME_UUID, self.SNAP_UUID)}
-
-        drv._ensure_share_writable(volume_dir)
-
-        info_path = drv._local_path_volume(volume) + '.info'
-        drv._read_info_file(info_path, empty_if_missing=True).\
-            AndReturn(info_file_dict)
-
-        img_info = imageutils.QemuImgInfo(qemu_img_info_output_snap_1)
-        image_utils.qemu_img_info(snap_path).AndReturn(img_info)
-
-        snap_ref = {'name': 'test snap',
-                    'volume_id': self.VOLUME_UUID,
-                    'volume': volume,
-                    'id': self.SNAP_UUID}
-
-        snap_path_chain = [{'filename': snap_file_2,
-                            'backing-filename': snap_file},
-                           {'filename': snap_file,
-                            'backing-filename': volume_file}]
-
-        drv.get_active_image_from_info(volume).AndReturn(snap_file_2)
-        drv._get_backing_chain_for_path(volume, snap_path_2).\
-            AndReturn(snap_path_chain)
-
-        drv._read_info_file(info_path).AndReturn(info_file_dict)
-
-        drv._execute('qemu-img', 'commit', snap_path_2, run_as_root=True)
-
-        drv._execute('rm', '-f', snap_path_2, run_as_root=True)
-
-        drv._read_info_file(info_path).AndReturn(info_file_dict)
-
-        drv._write_info_file(info_path, info_file_dict)
-
-        mox.ReplayAll()
-
-        drv.delete_snapshot(snap_ref)
-
-        mox.VerifyAll()
-
-    def test_delete_snapshot_not_in_info(self):
-        """Snapshot not in info file / info file doesn't exist.
-
-        Snapshot creation failed so nothing is on-disk.  Driver
-        should allow operation to succeed so the manager can
-        remove the snapshot record.
-
-        (Scenario: Snapshot object created in Cinder db but not
-         on backing storage.)
-
-        """
-        (mox, drv) = self._mox, self._driver
-
-        hashed = drv._get_hash_str(self.TEST_EXPORT1)
-        volume_dir = os.path.join(self.TEST_MNT_POINT_BASE, hashed)
-        volume_filename = 'volume-%s' % self.VOLUME_UUID
-        volume_path = os.path.join(volume_dir, volume_filename)
-        info_path = '%s%s' % (volume_path, '.info')
-
-        mox.StubOutWithMock(drv, '_read_file')
-        mox.StubOutWithMock(drv, '_read_info_file')
-        mox.StubOutWithMock(drv, '_ensure_share_writable')
-
-        snap_ref = {'name': 'test snap',
-                    'volume_id': self.VOLUME_UUID,
-                    'volume': self._simple_volume(),
-                    'id': self.SNAP_UUID_2}
-
-        drv._ensure_share_writable(volume_dir)
-
-        drv._read_info_file(info_path, empty_if_missing=True).AndReturn({})
-
-        mox.ReplayAll()
-
-        drv.delete_snapshot(snap_ref)
-
-        mox.VerifyAll()
-
     def test_read_info_file(self):
         (mox, drv) = self._mox, self._driver
 
@@ -1307,7 +1054,6 @@ class GlusterFsDriverTestCase(test.TestCase):
         volume_path = '%s/%s/%s' % (self.TEST_MNT_POINT_BASE,
                                     hashed,
                                     volume_file)
-        info_path = '%s.info' % volume_path
 
         ctxt = context.RequestContext('fake_user', 'fake_project')
 
@@ -1323,14 +1069,13 @@ class GlusterFsDriverTestCase(test.TestCase):
         snap_file = '%s.%s' % (volume_file, self.SNAP_UUID)
 
         mox.StubOutWithMock(drv, '_execute')
-        mox.StubOutWithMock(drv, '_create_qcow2_snap_file')
+        mox.StubOutWithMock(drv, '_do_create_snapshot')
         mox.StubOutWithMock(db, 'snapshot_get')
-        mox.StubOutWithMock(drv, '_write_info_file')
         mox.StubOutWithMock(drv, '_nova')
         # Stub out the busy wait.
         self.stub_out_not_replaying(time, 'sleep')
 
-        drv._create_qcow2_snap_file(snap_ref, volume_file, snap_path)
+        drv._do_create_snapshot(snap_ref, snap_file, snap_path)
 
         create_info = {'snapshot_id': snap_ref['id'],
                        'type': 'qcow2',
@@ -1353,14 +1098,9 @@ class GlusterFsDriverTestCase(test.TestCase):
         snap_ref_progress_90p['progress'] = '90%'
         db.snapshot_get(ctxt, self.SNAP_UUID).AndReturn(snap_ref_progress_90p)
 
-        snap_info = {'active': snap_file,
-                     self.SNAP_UUID: snap_file}
-
-        drv._write_info_file(info_path, snap_info)
-
         mox.ReplayAll()
 
-        drv.create_snapshot(snap_ref)
+        drv._create_snapshot_online(snap_ref, snap_file, snap_path)
 
         mox.VerifyAll()
 
@@ -1388,14 +1128,13 @@ class GlusterFsDriverTestCase(test.TestCase):
         snap_file = '%s.%s' % (volume_file, self.SNAP_UUID)
 
         mox.StubOutWithMock(drv, '_execute')
-        mox.StubOutWithMock(drv, '_create_qcow2_snap_file')
+        mox.StubOutWithMock(drv, '_do_create_snapshot')
         mox.StubOutWithMock(drv, '_nova')
         # Stub out the busy wait.
         self.stub_out_not_replaying(time, 'sleep')
         mox.StubOutWithMock(db, 'snapshot_get')
-        mox.StubOutWithMock(drv, '_write_info_file')
 
-        drv._create_qcow2_snap_file(snap_ref, volume_file, snap_path)
+        drv._do_create_snapshot(snap_ref, snap_file, snap_path)
 
         create_info = {'snapshot_id': snap_ref['id'],
                        'type': 'qcow2',
@@ -1422,10 +1161,10 @@ class GlusterFsDriverTestCase(test.TestCase):
         mox.ReplayAll()
 
         self.assertRaisesAndMessageMatches(
-            exception.GlusterfsException,
+            exception.RemoteFSException,
             'Nova returned "error" status while creating snapshot.',
-            drv.create_snapshot,
-            snap_ref)
+            drv._create_snapshot_online,
+            snap_ref, snap_file, snap_path)
 
         mox.VerifyAll()
 
@@ -1503,8 +1242,6 @@ class GlusterFsDriverTestCase(test.TestCase):
         }
 
         drv._nova.delete_volume_snapshot(ctxt, self.SNAP_UUID, delete_info)
-
-        drv._read_info_file(info_path).AndReturn(snap_info)
 
         drv._read_info_file(info_path).AndReturn(snap_info)
 
@@ -1609,8 +1346,6 @@ class GlusterFsDriverTestCase(test.TestCase):
 
         drv._read_info_file(info_path).AndReturn(snap_info)
 
-        drv._read_info_file(info_path).AndReturn(snap_info)
-
         snap_ref_progress = snap_ref.copy()
         snap_ref_progress['status'] = 'deleting'
 
@@ -1712,8 +1447,6 @@ class GlusterFsDriverTestCase(test.TestCase):
 
         drv._read_info_file(info_path).AndReturn(snap_info)
 
-        drv._read_info_file(info_path).AndReturn(snap_info)
-
         snap_ref_progress = snap_ref.copy()
         snap_ref_progress['status'] = 'deleting'
 
@@ -1739,136 +1472,6 @@ class GlusterFsDriverTestCase(test.TestCase):
 
         mox.VerifyAll()
 
-    @mock.patch('cinder.volume.drivers.glusterfs.GlusterfsDriver.'
-                '_delete_stale_snapshot')
-    @mock.patch('cinder.volume.drivers.glusterfs.GlusterfsDriver.'
-                'get_active_image_from_info')
-    @mock.patch('cinder.volume.drivers.glusterfs.GlusterfsDriver.'
-                '_qemu_img_info')
-    @mock.patch('cinder.volume.drivers.glusterfs.GlusterfsDriver.'
-                '_read_info_file')
-    @mock.patch('cinder.volume.drivers.glusterfs.GlusterfsDriver.'
-                '_local_path_volume')
-    @mock.patch('cinder.volume.drivers.glusterfs.GlusterfsDriver.'
-                '_local_volume_dir')
-    @mock.patch('cinder.volume.drivers.glusterfs.GlusterfsDriver.'
-                '_ensure_share_writable')
-    def test_delete_snapshot_online_stale_snapshot(self,
-                                                   mock_ensure_share_writable,
-                                                   mock_local_volume_dir,
-                                                   mock_local_path_volume,
-                                                   mock_read_info_file,
-                                                   mock_qemu_img_info,
-                                                   mock_get_active_image,
-                                                   mock_delete_stale_snap):
-        volume = self._simple_volume()
-        ctxt = context.RequestContext('fake_user', 'fake_project')
-        volume['status'] = 'in-use'
-        volume_filename = 'volume-%s' % self.VOLUME_UUID
-        volume_path = '%s/%s' % (self.TEST_MNT_POINT, volume_filename)
-        info_path = volume_path + '.info'
-        stale_snapshot = {'name': 'fake-volume',
-                          'volume_id': self.VOLUME_UUID,
-                          'volume': volume,
-                          'id': self.SNAP_UUID_2,
-                          'context': ctxt}
-        active_snap_file = volume['name'] + '.' + self.SNAP_UUID_2
-        stale_snap_file = volume['name'] + '.' + stale_snapshot['id']
-        stale_snap_path = '%s/%s' % (self.TEST_MNT_POINT, stale_snap_file)
-        snap_info = {'active': active_snap_file,
-                     stale_snapshot['id']: stale_snap_file}
-        qemu_img_info = imageutils.QemuImgInfo()
-        qemu_img_info.file_format = 'qcow2'
-
-        mock_local_path_volume.return_value = volume_path
-        mock_read_info_file.return_value = snap_info
-        mock_local_volume_dir.return_value = self.TEST_MNT_POINT
-        mock_qemu_img_info.return_value = qemu_img_info
-        mock_get_active_image.return_value = active_snap_file
-
-        self._driver.delete_snapshot(stale_snapshot)
-
-        mock_ensure_share_writable.assert_called_once_with(
-            self.TEST_MNT_POINT)
-        mock_local_path_volume.assert_called_once_with(
-            stale_snapshot['volume'])
-        mock_read_info_file.assert_called_once_with(info_path,
-                                                    empty_if_missing=True)
-        mock_qemu_img_info.assert_called_once_with(stale_snap_path)
-        mock_get_active_image.assert_called_once_with(
-            stale_snapshot['volume'])
-        mock_delete_stale_snap.assert_called_once_with(stale_snapshot)
-
-    @mock.patch('cinder.volume.drivers.glusterfs.GlusterfsDriver.'
-                '_write_info_file')
-    @mock.patch('cinder.openstack.common.fileutils.delete_if_exists')
-    @mock.patch('cinder.volume.drivers.glusterfs.GlusterfsDriver.'
-                'get_active_image_from_info')
-    @mock.patch('cinder.volume.drivers.glusterfs.GlusterfsDriver.'
-                '_local_volume_dir')
-    @mock.patch('cinder.volume.drivers.glusterfs.GlusterfsDriver.'
-                '_read_info_file')
-    @mock.patch('cinder.volume.drivers.glusterfs.GlusterfsDriver.'
-                '_local_path_volume')
-    def test_delete_stale_snapshot(self, mock_local_path_volume,
-                                   mock_read_info_file,
-                                   mock_local_volume_dir,
-                                   mock_get_active_image,
-                                   mock_delete_if_exists,
-                                   mock_write_info_file):
-        volume = self._simple_volume()
-        volume['status'] = 'in-use'
-        volume_filename = 'volume-%s' % self.VOLUME_UUID
-        volume_path = '%s/%s' % (self.TEST_MNT_POINT, volume_filename)
-        info_path = volume_path + '.info'
-
-        # Test case where snapshot_file = active_file
-        snapshot = {'name': 'fake-volume',
-                    'volume_id': self.VOLUME_UUID,
-                    'volume': volume,
-                    'id': self.SNAP_UUID_2}
-        active_snap_file = volume['name'] + '.' + self.SNAP_UUID_2
-        stale_snap_file = volume['name'] + '.' + snapshot['id']
-        stale_snap_path = '%s/%s' % (self.TEST_MNT_POINT, stale_snap_file)
-        snap_info = {'active': active_snap_file,
-                     snapshot['id']: stale_snap_file}
-
-        mock_local_path_volume.return_value = volume_path
-        mock_read_info_file.return_value = snap_info
-        mock_get_active_image.return_value = active_snap_file
-        mock_local_volume_dir.return_value = self.TEST_MNT_POINT
-
-        self._driver._delete_stale_snapshot(snapshot)
-
-        mock_local_path_volume.assert_called_with(snapshot['volume'])
-        mock_read_info_file.assert_called_with(info_path)
-        self.assertFalse(mock_delete_if_exists.called)
-        self.assertFalse(mock_write_info_file.called)
-
-        # Test case where snapshot_file != active_file
-        snapshot = {'name': 'fake-volume',
-                    'volume_id': self.VOLUME_UUID,
-                    'volume': volume,
-                    'id': self.SNAP_UUID}
-        active_snap_file = volume['name'] + '.' + self.SNAP_UUID_2
-        stale_snap_file = volume['name'] + '.' + snapshot['id']
-        stale_snap_path = '%s/%s' % (self.TEST_MNT_POINT, stale_snap_file)
-        snap_info = {'active': active_snap_file,
-                     snapshot['id']: stale_snap_file}
-
-        mock_local_path_volume.return_value = volume_path
-        mock_read_info_file.return_value = snap_info
-        mock_get_active_image.return_value = active_snap_file
-        mock_local_volume_dir.return_value = self.TEST_MNT_POINT
-
-        self._driver._delete_stale_snapshot(snapshot)
-
-        mock_local_path_volume.assert_called_with(snapshot['volume'])
-        mock_read_info_file.assert_called_with(info_path)
-        mock_delete_if_exists.assert_called_once_with(stale_snap_path)
-        snap_info.pop(snapshot['id'], None)
-        mock_write_info_file.assert_called_once_with(info_path, snap_info)
-
     def test_get_backing_chain_for_path(self):
         (mox, drv) = self._mox, self._driver
 
@@ -1877,8 +1480,8 @@ class GlusterFsDriverTestCase(test.TestCase):
 
         volume = self._simple_volume()
         vol_filename = volume['name']
-        vol_filename_2 = volume['name'] + '.asdfjkl'
-        vol_filename_3 = volume['name'] + 'qwertyuiop'
+        vol_filename_2 = volume['name'] + '.abcd'
+        vol_filename_3 = volume['name'] + '.efef'
         hashed = drv._get_hash_str(self.TEST_EXPORT1)
         vol_dir = '%s/%s' % (self.TEST_MNT_POINT_BASE, hashed)
         vol_path = '%s/%s' % (vol_dir, vol_filename)
@@ -2087,7 +1690,7 @@ class GlusterFsDriverTestCase(test.TestCase):
         info = imageutils.QemuImgInfo()
         info.file_format = 'raw'
 
-        drv._qemu_img_info(IgnoreArg()).AndReturn(info)
+        drv._qemu_img_info(IgnoreArg(), IgnoreArg()).AndReturn(info)
 
         base_driver.VolumeDriver.backup_volume(IgnoreArg(),
                                                IgnoreArg(),
@@ -2123,7 +1726,7 @@ class GlusterFsDriverTestCase(test.TestCase):
         info = imageutils.QemuImgInfo()
         info.file_format = 'raw'
 
-        drv._qemu_img_info(IgnoreArg()).AndReturn(info)
+        drv._qemu_img_info(IgnoreArg(), IgnoreArg()).AndReturn(info)
 
         base_driver.VolumeDriver.backup_volume(IgnoreArg(),
                                                IgnoreArg(),
@@ -2177,7 +1780,7 @@ class GlusterFsDriverTestCase(test.TestCase):
         info.file_format = 'raw'
         info.backing_file = 'file1'
 
-        drv._qemu_img_info(IgnoreArg()).AndReturn(info)
+        drv._qemu_img_info(IgnoreArg(), IgnoreArg()).AndReturn(info)
 
         mox.ReplayAll()
 
@@ -2206,7 +1809,7 @@ class GlusterFsDriverTestCase(test.TestCase):
         info.file_format = 'qcow2'
 
         drv.db.volume_get(ctxt, volume['id']).AndReturn(volume)
-        drv._qemu_img_info(IgnoreArg()).AndReturn(info)
+        drv._qemu_img_info(IgnoreArg(), IgnoreArg()).AndReturn(info)
 
         mox.ReplayAll()
 
@@ -2221,17 +1824,22 @@ class GlusterFsDriverTestCase(test.TestCase):
 
         volume = self._simple_volume()
         volume_path = '%s/%s' % (self.TEST_MNT_POINT, volume['name'])
+        image_meta = {'id': '10958016-e196-42e3-9e7f-5d8927ae3099'}
 
         with contextlib.nested(
             mock.patch.object(drv, 'get_active_image_from_info'),
             mock.patch.object(drv, '_local_volume_dir'),
             mock.patch.object(image_utils, 'qemu_img_info'),
-            mock.patch.object(image_utils, 'upload_volume')
+            mock.patch.object(image_utils, 'upload_volume'),
+            mock.patch.object(image_utils, 'create_temporary_file')
         ) as (mock_get_active_image_from_info, mock_local_volume_dir,
-              mock_qemu_img_info, mock_upload_volume):
+              mock_qemu_img_info, mock_upload_volume,
+              mock_create_temporary_file):
             mock_get_active_image_from_info.return_value = volume['name']
 
             mock_local_volume_dir.return_value = self.TEST_MNT_POINT
+
+            mock_create_temporary_file.return_value = self.TEST_TMP_FILE
 
             qemu_img_output = """image: %s
             file format: raw
@@ -2243,13 +1851,14 @@ class GlusterFsDriverTestCase(test.TestCase):
 
             upload_path = volume_path
 
-            drv.copy_volume_to_image(mock.ANY, volume, mock.ANY, mock.ANY)
+            drv.copy_volume_to_image(mock.ANY, volume, mock.ANY, image_meta)
 
             mock_get_active_image_from_info.assert_called_once_with(volume)
             mock_local_volume_dir.assert_called_once_with(volume)
             mock_qemu_img_info.assert_called_once_with(volume_path)
             mock_upload_volume.assert_called_once_with(
                 mock.ANY, mock.ANY, mock.ANY, upload_path)
+            mock_create_temporary_file.assert_once_called_with()
 
     def test_copy_volume_to_image_qcow2_image(self):
         """Upload a qcow2 image file which has to be converted to raw first."""
@@ -2265,13 +1874,15 @@ class GlusterFsDriverTestCase(test.TestCase):
             mock.patch.object(image_utils, 'qemu_img_info'),
             mock.patch.object(image_utils, 'convert_image'),
             mock.patch.object(image_utils, 'upload_volume'),
-            mock.patch.object(drv, '_execute')
+            mock.patch.object(image_utils, 'create_temporary_file')
         ) as (mock_get_active_image_from_info, mock_local_volume_dir,
               mock_qemu_img_info, mock_convert_image, mock_upload_volume,
-              mock_execute):
+              mock_create_temporary_file):
             mock_get_active_image_from_info.return_value = volume['name']
 
             mock_local_volume_dir.return_value = self.TEST_MNT_POINT
+
+            mock_create_temporary_file.return_value = self.TEST_TMP_FILE
 
             qemu_img_output = """image: %s
             file format: qcow2
@@ -2281,9 +1892,7 @@ class GlusterFsDriverTestCase(test.TestCase):
             img_info = imageutils.QemuImgInfo(qemu_img_output)
             mock_qemu_img_info.return_value = img_info
 
-            upload_path = '%s/%s.temp_image.%s' % (self.TEST_MNT_POINT,
-                                                   volume['id'],
-                                                   image_meta['id'])
+            upload_path = self.TEST_TMP_FILE
 
             drv.copy_volume_to_image(mock.ANY, volume, mock.ANY, image_meta)
 
@@ -2294,7 +1903,7 @@ class GlusterFsDriverTestCase(test.TestCase):
                 volume_path, upload_path, 'raw')
             mock_upload_volume.assert_called_once_with(
                 mock.ANY, mock.ANY, mock.ANY, upload_path)
-            mock_execute.assert_called_once_with('rm', '-f', upload_path)
+            mock_create_temporary_file.assert_once_called_with()
 
     def test_copy_volume_to_image_snapshot_exists(self):
         """Upload an active snapshot which has to be converted to raw first."""
@@ -2311,13 +1920,15 @@ class GlusterFsDriverTestCase(test.TestCase):
             mock.patch.object(image_utils, 'qemu_img_info'),
             mock.patch.object(image_utils, 'convert_image'),
             mock.patch.object(image_utils, 'upload_volume'),
-            mock.patch.object(drv, '_execute')
+            mock.patch.object(image_utils, 'create_temporary_file')
         ) as (mock_get_active_image_from_info, mock_local_volume_dir,
               mock_qemu_img_info, mock_convert_image, mock_upload_volume,
-              mock_execute):
+              mock_create_temporary_file):
             mock_get_active_image_from_info.return_value = volume['name']
 
             mock_local_volume_dir.return_value = self.TEST_MNT_POINT
+
+            mock_create_temporary_file.return_value = self.TEST_TMP_FILE
 
             qemu_img_output = """image: volume-%s.%s
             file format: qcow2
@@ -2328,9 +1939,7 @@ class GlusterFsDriverTestCase(test.TestCase):
             img_info = imageutils.QemuImgInfo(qemu_img_output)
             mock_qemu_img_info.return_value = img_info
 
-            upload_path = '%s/%s.temp_image.%s' % (self.TEST_MNT_POINT,
-                                                   volume['id'],
-                                                   image_meta['id'])
+            upload_path = self.TEST_TMP_FILE
 
             drv.copy_volume_to_image(mock.ANY, volume, mock.ANY, image_meta)
 
@@ -2341,4 +1950,4 @@ class GlusterFsDriverTestCase(test.TestCase):
                 volume_path, upload_path, 'raw')
             mock_upload_volume.assert_called_once_with(
                 mock.ANY, mock.ANY, mock.ANY, upload_path)
-            mock_execute.assert_called_once_with('rm', '-f', upload_path)
+            mock_create_temporary_file.assert_once_called_with()

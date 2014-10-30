@@ -147,6 +147,69 @@ def notify_about_replication_error(context, volume, suffix,
                                                 usage_info)
 
 
+def _usage_from_consistencygroup(context, group_ref, **kw):
+    usage_info = dict(tenant_id=group_ref['project_id'],
+                      user_id=group_ref['user_id'],
+                      availability_zone=group_ref['availability_zone'],
+                      consistencygroup_id=group_ref['id'],
+                      name=group_ref['name'],
+                      created_at=null_safe_str(group_ref['created_at']),
+                      status=group_ref['status'])
+
+    usage_info.update(kw)
+    return usage_info
+
+
+def notify_about_consistencygroup_usage(context, group, event_suffix,
+                                        extra_usage_info=None, host=None):
+    if not host:
+        host = CONF.host
+
+    if not extra_usage_info:
+        extra_usage_info = {}
+
+    usage_info = _usage_from_consistencygroup(context,
+                                              group,
+                                              **extra_usage_info)
+
+    rpc.get_notifier("consistencygroup", host).info(
+        context,
+        'consistencygroup.%s' % event_suffix,
+        usage_info)
+
+
+def _usage_from_cgsnapshot(context, cgsnapshot_ref, **kw):
+    usage_info = dict(
+        tenant_id=cgsnapshot_ref['project_id'],
+        user_id=cgsnapshot_ref['user_id'],
+        cgsnapshot_id=cgsnapshot_ref['id'],
+        name=cgsnapshot_ref['name'],
+        consistencygroup_id=cgsnapshot_ref['consistencygroup_id'],
+        created_at=null_safe_str(cgsnapshot_ref['created_at']),
+        status=cgsnapshot_ref['status'])
+
+    usage_info.update(kw)
+    return usage_info
+
+
+def notify_about_cgsnapshot_usage(context, cgsnapshot, event_suffix,
+                                  extra_usage_info=None, host=None):
+    if not host:
+        host = CONF.host
+
+    if not extra_usage_info:
+        extra_usage_info = {}
+
+    usage_info = _usage_from_cgsnapshot(context,
+                                        cgsnapshot,
+                                        **extra_usage_info)
+
+    rpc.get_notifier("cgsnapshot", host).info(
+        context,
+        'cgsnapshot.%s' % event_suffix,
+        usage_info)
+
+
 def setup_blkio_cgroup(srcpath, dstpath, bps_limit, execute=utils.execute):
     if not bps_limit:
         LOG.debug('Not using bps rate limiting on volume copy')
@@ -222,18 +285,26 @@ def _calculate_count(size_in_m, blocksize):
     return blocksize, int(count)
 
 
+def check_for_odirect_support(src, dest, flag='oflag=direct'):
+
+    # Check whether O_DIRECT is supported
+    try:
+        utils.execute('dd', 'count=0', 'if=%s' % src, 'of=%s' % dest,
+                      flag, run_as_root=True)
+        return True
+    except processutils.ProcessExecutionError:
+        return False
+
+
 def copy_volume(srcstr, deststr, size_in_m, blocksize, sync=False,
                 execute=utils.execute, ionice=None):
     # Use O_DIRECT to avoid thrashing the system buffer cache
     extra_flags = []
-    # Check whether O_DIRECT is supported to iflag and oflag separately
-    for flag in ['iflag=direct', 'oflag=direct']:
-        try:
-            execute('dd', 'count=0', 'if=%s' % srcstr, 'of=%s' % deststr,
-                    flag, run_as_root=True)
-            extra_flags.append(flag)
-        except processutils.ProcessExecutionError:
-            pass
+    if check_for_odirect_support(srcstr, deststr, 'iflag=direct'):
+        extra_flags.append('iflag=direct')
+
+    if check_for_odirect_support(srcstr, deststr, 'oflag=direct'):
+        extra_flags.append('oflag=direct')
 
     # If the volume is being unprovisioned then
     # request the data is persisted before returning,
@@ -380,3 +451,60 @@ def generate_password(length=20, symbolgroups=DEFAULT_PASSWORD_SYMBOLS):
 def generate_username(length=20, symbolgroups=DEFAULT_PASSWORD_SYMBOLS):
     # Use the same implementation as the password generation.
     return generate_password(length, symbolgroups)
+
+
+DEFAULT_POOL_NAME = '_pool0'
+
+
+def extract_host(host, level='backend', default_pool_name=False):
+    """Extract Host, Backend or Pool information from host string.
+
+    :param host: String for host, which could include host@backend#pool info
+    :param level: Indicate which level of information should be extracted
+                  from host string. Level can be 'host', 'backend' or 'pool',
+                  default value is 'backend'
+    :param default_pool_name: this flag specify what to do if level == 'pool'
+                              and there is no 'pool' info encoded in host
+                              string.  default_pool_name=True will return
+                              DEFAULT_POOL_NAME, otherwise we return None.
+                              Default value of this parameter is False.
+    :return: expected level of information
+
+    For example:
+        host = 'HostA@BackendB#PoolC'
+        ret = extract_host(host, 'host')
+        # ret is 'HostA'
+        ret = extract_host(host, 'backend')
+        # ret is 'HostA@BackendB'
+        ret = extract_host(host, 'pool')
+        # ret is 'PoolC'
+
+        host = 'HostX@BackendY'
+        ret = extract_host(host, 'pool')
+        # ret is None
+        ret = extract_host(host, 'pool', True)
+        # ret is '_pool0'
+    """
+    if level == 'host':
+        # make sure pool is not included
+        hst = host.split('#')[0]
+        return hst.split('@')[0]
+    elif level == 'backend':
+        return host.split('#')[0]
+    elif level == 'pool':
+        lst = host.split('#')
+        if len(lst) == 2:
+            return lst[1]
+        elif default_pool_name is True:
+            return DEFAULT_POOL_NAME
+        else:
+            return None
+
+
+def append_host(host, pool):
+    """Encode pool into host info."""
+    if not host or not pool:
+        return host
+
+    new_host = "#".join([host, pool])
+    return new_host

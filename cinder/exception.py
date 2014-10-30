@@ -294,18 +294,6 @@ class ISCSITargetNotFoundForVolume(NotFound):
     message = _("No target id found for volume %(volume_id)s.")
 
 
-class ISCSITargetCreateFailed(CinderException):
-    message = _("Failed to create iscsi target for volume %(volume_id)s.")
-
-
-class ISCSITargetRemoveFailed(CinderException):
-    message = _("Failed to remove iscsi target for volume %(volume_id)s.")
-
-
-class ISCSITargetAttachFailed(CinderException):
-    message = _("Failed to attach iSCSI target for volume %(volume_id)s.")
-
-
 class InvalidImageRef(Invalid):
     message = _("Invalid image href %(image_href)s.")
 
@@ -430,12 +418,22 @@ class VolumeSizeExceedsAvailableQuota(QuotaError):
                 "%(consumed)sG has been consumed.")
 
 
+class VolumeBackupSizeExceedsAvailableQuota(QuotaError):
+    message = _("Requested backup exceeds allowed Backup Gigabytes "
+                "quota. Requested %(requested)sG, quota is %(quota)sG and "
+                "%(consumed)sG has been consumed.")
+
+
 class VolumeLimitExceeded(QuotaError):
     message = _("Maximum number of volumes allowed (%(allowed)d) exceeded")
 
 
 class SnapshotLimitExceeded(QuotaError):
     message = _("Maximum number of snapshots allowed (%(allowed)d) exceeded")
+
+
+class BackupLimitExceeded(QuotaError):
+    message = _("Maximum number of backups allowed (%(allowed)d) exceeded")
 
 
 class DuplicateSfVolumeNames(Duplicate):
@@ -472,6 +470,10 @@ class ExportFailure(Invalid):
     message = _("Failed to export for volume: %(reason)s")
 
 
+class RemoveExportException(VolumeDriverException):
+    message = _("Failed to remove export for volume %(volume)s: %(reason)s")
+
+
 class MetadataCreateFailure(Invalid):
     message = _("Failed to create metadata for volume: %(reason)s")
 
@@ -498,6 +500,10 @@ class BackupOperationError(Invalid):
 
 class BackupMetadataUnsupportedVersion(BackupDriverException):
     message = _("Unsupported backup metadata version requested")
+
+
+class BackupVerifyUnsupportedDriver(BackupDriverException):
+    message = _("Unsupported backup verify driver")
 
 
 class VolumeMetadataBackupExists(BackupDriverException):
@@ -691,39 +697,65 @@ class SolidFireAccountNotFound(SolidFireDriverException):
                 "Solidfire device")
 
 
+class SolidFireRetryableException(VolumeBackendAPIException):
+    message = _("Retryable SolidFire Exception encountered")
+
+
 # HP 3Par
 class Invalid3PARDomain(VolumeDriverException):
     message = _("Invalid 3PAR Domain: %(err)s")
 
 
+# RemoteFS drivers
+class RemoteFSException(VolumeDriverException):
+    message = _("Unknown RemoteFS exception")
+
+
+class RemoteFSNoSharesMounted(RemoteFSException):
+    message = _("No mounted shares found")
+
+
+class RemoteFSNoSuitableShareFound(RemoteFSException):
+    message = _("There is no share which can host %(volume_size)sG")
+
+
 # NFS driver
-class NfsException(VolumeDriverException):
+class NfsException(RemoteFSException):
     message = _("Unknown NFS exception")
 
 
-class NfsNoSharesMounted(VolumeDriverException):
+class NfsNoSharesMounted(RemoteFSNoSharesMounted):
     message = _("No mounted NFS shares found")
 
 
-class NfsNoSuitableShareFound(VolumeDriverException):
+class NfsNoSuitableShareFound(RemoteFSNoSuitableShareFound):
     message = _("There is no share which can host %(volume_size)sG")
+
+
+# Smbfs driver
+class SmbfsException(RemoteFSException):
+    message = _("Unknown SMBFS exception.")
+
+
+class SmbfsNoSharesMounted(RemoteFSNoSharesMounted):
+    message = _("No mounted SMBFS shares found.")
+
+
+class SmbfsNoSuitableShareFound(RemoteFSNoSuitableShareFound):
+    message = _("There is no share which can host %(volume_size)sG.")
 
 
 # Gluster driver
-class GlusterfsException(VolumeDriverException):
+class GlusterfsException(RemoteFSException):
     message = _("Unknown Gluster exception")
 
 
-class GlusterfsNoSharesMounted(VolumeDriverException):
+class GlusterfsNoSharesMounted(RemoteFSNoSharesMounted):
     message = _("No mounted Gluster shares found")
 
 
-class GlusterfsNoSuitableShareFound(VolumeDriverException):
+class GlusterfsNoSuitableShareFound(RemoteFSNoSuitableShareFound):
     message = _("There is no share which can host %(volume_size)sG")
-
-
-class RemoveExportException(VolumeDriverException):
-    message = _("Failed to remove export for volume %(volume)s: %(reason)s")
 
 
 # HP MSA
@@ -773,6 +805,10 @@ class BrocadeZoningCliException(CinderException):
     message = _("Fibre Channel Zoning CLI error: %(reason)s")
 
 
+class CiscoZoningCliException(CinderException):
+    message = _("Fibre Channel Zoning CLI error: %(reason)s")
+
+
 class NetAppDriverException(VolumeDriverException):
     message = _("NetApp Cinder Driver exception.")
 
@@ -795,3 +831,48 @@ class EMCVnxCLICmdError(VolumeBackendAPIException):
             LOG.error(msg)
         else:
             LOG.warn(msg)
+
+
+# ConsistencyGroup
+class ConsistencyGroupNotFound(NotFound):
+    message = _("ConsistencyGroup %(consistencygroup_id)s could not be found.")
+
+
+class InvalidConsistencyGroup(Invalid):
+    message = _("Invalid ConsistencyGroup: %(reason)s")
+
+
+# CgSnapshot
+class CgSnapshotNotFound(NotFound):
+    message = _("CgSnapshot %(cgsnapshot_id)s could not be found.")
+
+
+class InvalidCgSnapshot(Invalid):
+    message = _("Invalid CgSnapshot: %(reason)s")
+
+
+# Hitachi Block Storage Driver
+class HBSDError(CinderException):
+    message = _("HBSD error occurs.")
+
+
+class HBSDCmdError(HBSDError):
+
+    def __init__(self, message=None, ret=None, err=None):
+        self.ret = ret
+        self.stderr = err
+
+        super(HBSDCmdError, self).__init__(message=message)
+
+
+class HBSDBusy(HBSDError):
+    message = "Device or resource is busy."
+
+
+class HBSDNotFound(NotFound):
+    message = _("Storage resource could not be found.")
+
+
+# Datera driver
+class DateraAPIException(VolumeBackendAPIException):
+    message = _("Bad response from Datera API")

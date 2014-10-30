@@ -23,6 +23,8 @@ import re
 import stat
 import time
 
+import six
+
 from cinder.brick import exception
 from cinder.brick import executor
 from cinder.i18n import _
@@ -46,6 +48,10 @@ class TargetAdmin(executor.Executor):
 
     def _run(self, *args, **kwargs):
         self._execute(self._cmd, *args, run_as_root=True, **kwargs)
+
+    def _get_target_chap_auth(self, volume_id):
+        """Get the current chap auth username and password."""
+        return None
 
     def create_iscsi_target(self, name, tid, lun, path,
                             chap_auth=None, **kwargs):
@@ -159,6 +165,25 @@ class TgtAdm(TargetAdmin):
                         "id:%(vol_id)s: %(e)s")
                       % {'vol_id': name, 'e': e})
 
+    def _get_target_chap_auth(self, name):
+        volumes_dir = self.volumes_dir
+        vol_id = name.split(':')[1]
+        volume_path = os.path.join(volumes_dir, vol_id)
+
+        try:
+            with open(volume_path, 'r') as f:
+                volume_conf = f.read()
+        except Exception as e:
+            LOG.debug('Failed to open config for %(vol_id)s: %(e)s'
+                      % {'vol_id': vol_id, 'e': six.text_type(e)})
+            return None
+
+        m = re.search('incominguser (\w+) (\w+)', volume_conf)
+        if m:
+            return (m.group(1), m.group(2))
+        LOG.debug('Failed to find CHAP auth from config for %s' % vol_id)
+        return None
+
     def create_iscsi_target(self, name, tid, lun, path,
                             chap_auth=None, **kwargs):
         # Note(jdg) tid and lun aren't used by TgtAdm but remain for
@@ -171,8 +196,9 @@ class TgtAdm(TargetAdmin):
         if chap_auth is None:
             volume_conf = self.VOLUME_CONF % (name, path, write_cache)
         else:
+            chap_str = re.sub('^IncomingUser ', 'incominguser ', chap_auth)
             volume_conf = self.VOLUME_CONF_WITH_CHAP_AUTH % (name,
-                                                             path, chap_auth,
+                                                             path, chap_str,
                                                              write_cache)
 
         LOG.info(_('Creating iscsi_target for: %s') % vol_id)
@@ -495,10 +521,6 @@ class LioAdm(TargetAdmin):
 
         LOG.info(_('Creating iscsi_target for volume: %s') % vol_id)
 
-        # rtstool requires chap_auth, but unit tests don't provide it
-        chap_auth_userid = 'test_id'
-        chap_auth_password = 'test_pass'
-
         if chap_auth is not None:
             (chap_auth_userid, chap_auth_password) = chap_auth.split(' ')[1:]
 
@@ -572,7 +594,21 @@ class LioAdm(TargetAdmin):
                           connector['initiator'],
                           run_as_root=True)
         except putils.ProcessExecutionError:
-            LOG.error(_("Failed to add initiator iqn %s to target") %
+            LOG.error(_("Failed to add initiator iqn %s to target.") %
+                      connector['initiator'])
+            raise exception.ISCSITargetAttachFailed(volume_id=volume['id'])
+
+    def terminate_connection(self, volume, connector):
+        volume_iqn = volume['provider_location'].split(' ')[1]
+
+        # Delete initiator iqns from target ACL
+        try:
+            self._execute('cinder-rtstool', 'delete-initiator',
+                          volume_iqn,
+                          connector['initiator'],
+                          run_as_root=True)
+        except putils.ProcessExecutionError:
+            LOG.error(_("Failed to delete initiator iqn %s to target.") %
                       connector['initiator'])
             raise exception.ISCSITargetAttachFailed(volume_id=volume['id'])
 

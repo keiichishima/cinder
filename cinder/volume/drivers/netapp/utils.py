@@ -23,8 +23,11 @@ NetApp drivers to achieve the desired functionality.
 import base64
 import binascii
 import copy
+import decimal
 import socket
 import uuid
+
+import six
 
 from cinder import context
 from cinder import exception
@@ -40,6 +43,14 @@ from cinder.volume import volume_types
 
 
 LOG = logging.getLogger(__name__)
+
+
+OBSOLETE_SSC_SPECS = {'netapp:raid_type': 'netapp_raid_type',
+                      'netapp:disk_type': 'netapp_disk_type'}
+DEPRECATED_SSC_SPECS = {'netapp_unmirrored': 'netapp_mirrored',
+                        'netapp_nodedup': 'netapp_dedup',
+                        'netapp_nocompression': 'netapp_compression',
+                        'netapp_thick_provisioned': 'netapp_thin_provisioned'}
 
 
 def provide_ems(requester, server, stats, netapp_backend,
@@ -356,3 +367,21 @@ def convert_es_fmt_to_uuid(es_label):
     """Converts e-series name format to uuid."""
     es_label_b32 = es_label.ljust(32, '=')
     return uuid.UUID(binascii.hexlify(base64.b32decode(es_label_b32)))
+
+
+def round_down(value, precision):
+    return float(decimal.Decimal(six.text_type(value)).quantize(
+        decimal.Decimal(precision), rounding=decimal.ROUND_DOWN))
+
+
+def log_extra_spec_warnings(extra_specs):
+    for spec in (set(extra_specs.keys() if extra_specs else []) &
+                 set(OBSOLETE_SSC_SPECS.keys())):
+            msg = _('Extra spec %(old)s is obsolete.  Use %(new)s instead.')
+            args = {'old': spec, 'new': OBSOLETE_SSC_SPECS[spec]}
+            LOG.warn(msg % args)
+    for spec in (set(extra_specs.keys() if extra_specs else []) &
+                 set(DEPRECATED_SSC_SPECS.keys())):
+            msg = _('Extra spec %(old)s is deprecated.  Use %(new)s instead.')
+            args = {'old': spec, 'new': DEPRECATED_SSC_SPECS[spec]}
+            LOG.warn(msg % args)

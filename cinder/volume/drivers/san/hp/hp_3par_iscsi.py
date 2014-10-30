@@ -73,10 +73,13 @@ class HP3PARISCSIDriver(cinder.volume.driver.ISCSIDriver):
         2.0.4 - Added support for volume retype
         2.0.5 - Added CHAP support, requires 3.1.3 MU1 firmware
                 and hp3parclient 3.1.0.
+        2.0.6 - Fixing missing login/logout around attach/detach bug #1367429
+        2.0.7 - Add support for pools with model update
+        2.0.8 - Migrate without losing type settings bug #1356608
 
     """
 
-    VERSION = "2.0.5"
+    VERSION = "2.0.8"
 
     def __init__(self, *args, **kwargs):
         super(HP3PARISCSIDriver, self).__init__(*args, **kwargs)
@@ -188,8 +191,7 @@ class HP3PARISCSIDriver(cinder.volume.driver.ISCSIDriver):
     def create_volume(self, volume):
         self.common.client_login()
         try:
-            metadata = self.common.create_volume(volume)
-            return {'metadata': metadata}
+            return self.common.create_volume(volume)
         finally:
             self.common.client_logout()
 
@@ -198,8 +200,7 @@ class HP3PARISCSIDriver(cinder.volume.driver.ISCSIDriver):
         """Clone an existing volume."""
         self.common.client_login()
         try:
-            new_vol = self.common.create_cloned_volume(volume, src_vref)
-            return {'metadata': new_vol}
+            return self.common.create_cloned_volume(volume, src_vref)
         finally:
             self.common.client_logout()
 
@@ -219,9 +220,8 @@ class HP3PARISCSIDriver(cinder.volume.driver.ISCSIDriver):
         """
         self.common.client_login()
         try:
-            metadata = self.common.create_volume_from_snapshot(volume,
-                                                               snapshot)
-            return {'metadata': metadata}
+            return self.common.create_volume_from_snapshot(volume,
+                                                           snapshot)
         finally:
             self.common.client_logout()
 
@@ -643,11 +643,19 @@ class HP3PARISCSIDriver(cinder.volume.driver.ISCSIDriver):
     @utils.synchronized('3par', external=True)
     def attach_volume(self, context, volume, instance_uuid, host_name,
                       mountpoint):
-        self.common.attach_volume(volume, instance_uuid)
+        self.common.client_login()
+        try:
+            self.common.attach_volume(volume, instance_uuid)
+        finally:
+            self.common.client_logout()
 
     @utils.synchronized('3par', external=True)
     def detach_volume(self, context, volume):
-        self.common.detach_volume(volume)
+        self.common.client_login()
+        try:
+            self.common.detach_volume(volume)
+        finally:
+            self.common.client_logout()
 
     @utils.synchronized('3par', external=True)
     def retype(self, context, volume, new_type, diff, host):
@@ -660,8 +668,27 @@ class HP3PARISCSIDriver(cinder.volume.driver.ISCSIDriver):
 
     @utils.synchronized('3par', external=True)
     def migrate_volume(self, context, volume, host):
+
+        if volume['status'] == 'in-use':
+            protocol = host['capabilities']['storage_protocol']
+            if protocol != 'iSCSI':
+                LOG.debug("3PAR ISCSI driver cannot migrate in-use volume "
+                          "to a host with storage_protocol=%s." % protocol)
+                return False, None
+
         self.common.client_login()
         try:
             return self.common.migrate_volume(volume, host)
+        finally:
+            self.common.client_logout()
+
+    def get_pool(self, volume):
+        self.common.client_login()
+        try:
+            return self.common.get_cpg(volume)
+        except hpexceptions.HTTPNotFound:
+            reason = (_("Volume %s doesn't exist on array.") % volume)
+            LOG.error(reason)
+            raise exception.InvalidVolume(reason)
         finally:
             self.common.client_logout()

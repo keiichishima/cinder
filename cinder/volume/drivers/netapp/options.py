@@ -44,12 +44,11 @@ netapp_connection_opts = [
                help='The hostname (or IP address) for the storage system or '
                     'proxy server.'),
     cfg.IntOpt('netapp_server_port',
-               default=80,
+               default=None,
                help=('The TCP port to use for communication with the storage '
-                     'system or proxy server. Traditionally, port 80 is used '
-                     'for HTTP and port 443 is used for HTTPS; however, this '
-                     'value should be changed if an alternate port has been '
-                     'configured on the storage system or proxy server.')), ]
+                     'system or proxy server. If not specified, Data ONTAP '
+                     'drivers will use 80 for HTTP and 443 for HTTPS; '
+                     'E-Series will use 8080 for HTTP and 8443 for HTTPS.')), ]
 
 netapp_transport_opts = [
     cfg.StrOpt('netapp_transport_type',
@@ -161,7 +160,13 @@ netapp_eseries_opts = [
                      'specified storage pools. Only dynamic disk pools are '
                      'currently supported. Specify the value of this option to'
                      ' be a comma separated list of disk pool names to be used'
-                     ' for provisioning.')), ]
+                     ' for provisioning.')),
+    cfg.StrOpt('netapp_eseries_host_type',
+               default='linux_dm_mp',
+               help=('This option is used to define how the controllers in '
+                     'the E-Series storage array will work with the '
+                     'particular operating system on the hosts that are '
+                     'connected to it.')), ]
 netapp_nfs_extra_opts = [
     cfg.StrOpt('netapp_copyoffload_tool_path',
                default=None,

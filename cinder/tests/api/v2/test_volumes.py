@@ -36,7 +36,7 @@ from cinder.volume import api as volume_api
 
 CONF = cfg.CONF
 
-NS = '{http://docs.openstack.org/api/openstack-volume/2.0/content}'
+NS = '{http://docs.openstack.org/api/openstack-block-storage/2.0/content}'
 
 TEST_SNAPSHOT_UUID = '00000000-0000-0000-0000-000000000001'
 
@@ -94,6 +94,7 @@ class VolumeApiTest(test.TestCase):
                            'volume_id': '1'}],
                          'availability_zone': 'zone1:host1',
                          'bootable': 'false',
+                         'consistencygroup_id': None,
                          'created_at': datetime.datetime(1, 1, 1, 1, 1, 1),
                          'description': 'Volume Test Desc',
                          'id': '1',
@@ -113,6 +114,36 @@ class VolumeApiTest(test.TestCase):
                          'volume_type': 'vol_type_name',
                          'encrypted': False}}
         self.assertEqual(res_dict, ex)
+
+    def test_volume_create_with_consistencygroup_invalid_type(self):
+        ctxt = context.RequestContext('fake', 'fake', auth_token=True)
+        vol_type = db.volume_type_create(
+            context.get_admin_context(),
+            dict(name=CONF.default_volume_type, extra_specs={})
+        )
+        db_vol_type = db.volume_type_get(context.get_admin_context(),
+                                         vol_type.id)
+        cg = {
+            'id': '1',
+            'name': 'cg1',
+            'volume_type_id': db_vol_type['id'],
+        }
+        fake_type = {
+            'id': '9999',
+            'name': 'fake',
+        }
+        vol_api = volume_api.API()
+
+        self.assertRaises(exception.InvalidInput,
+                          vol_api.create,
+                          ctxt, 1, 'vol1', 'volume 1',
+                          consistencygroup=cg)
+
+        self.assertRaises(exception.InvalidInput,
+                          vol_api.create,
+                          ctxt, 1, 'vol1', 'volume 1',
+                          volume_type=fake_type,
+                          consistencygroup=cg)
 
     def test_volume_create_with_type(self):
         vol_type = db.volume_type_create(
@@ -197,6 +228,7 @@ class VolumeApiTest(test.TestCase):
                                           'volume_id': '1'}],
                          'availability_zone': 'nova',
                          'bootable': 'false',
+                         'consistencygroup_id': None,
                          'created_at': datetime.datetime(1, 1, 1, 1, 1, 1),
                          'description': 'Volume Test Desc',
                          'encrypted': False,
@@ -287,6 +319,7 @@ class VolumeApiTest(test.TestCase):
                 'encrypted': False,
                 'availability_zone': 'fakeaz',
                 'bootable': 'false',
+                'consistencygroup_id': None,
                 'name': 'Updated Test Name',
                 'replication_status': 'disabled',
                 'attachments': [
@@ -340,6 +373,7 @@ class VolumeApiTest(test.TestCase):
                 'encrypted': False,
                 'availability_zone': 'fakeaz',
                 'bootable': 'false',
+                'consistencygroup_id': None,
                 'name': 'Updated Test Name',
                 'replication_status': 'disabled',
                 'attachments': [
@@ -396,6 +430,7 @@ class VolumeApiTest(test.TestCase):
                 'encrypted': False,
                 'availability_zone': 'fakeaz',
                 'bootable': 'false',
+                'consistencygroup_id': None,
                 'name': 'New Name',
                 'replication_status': 'disabled',
                 'attachments': [
@@ -447,6 +482,7 @@ class VolumeApiTest(test.TestCase):
             'encrypted': False,
             'availability_zone': 'fakeaz',
             'bootable': 'false',
+            'consistencygroup_id': None,
             'name': 'displayname',
             'replication_status': 'disabled',
             'attachments': [{
@@ -509,6 +545,7 @@ class VolumeApiTest(test.TestCase):
             'encrypted': False,
             'availability_zone': 'fakeaz',
             'bootable': 'false',
+            'consistencygroup_id': None,
             'name': 'Updated Test Name',
             'replication_status': 'disabled',
             'attachments': [{
@@ -613,6 +650,7 @@ class VolumeApiTest(test.TestCase):
                     'encrypted': False,
                     'availability_zone': 'fakeaz',
                     'bootable': 'false',
+                    'consistencygroup_id': None,
                     'name': 'displayname',
                     'replication_status': 'disabled',
                     'attachments': [
@@ -674,6 +712,7 @@ class VolumeApiTest(test.TestCase):
                     'encrypted': False,
                     'availability_zone': 'fakeaz',
                     'bootable': 'false',
+                    'consistencygroup_id': None,
                     'name': 'displayname',
                     'replication_status': 'disabled',
                     'attachments': [
@@ -1074,6 +1113,7 @@ class VolumeApiTest(test.TestCase):
                 'encrypted': False,
                 'availability_zone': 'fakeaz',
                 'bootable': 'false',
+                'consistencygroup_id': None,
                 'name': 'displayname',
                 'replication_status': 'disabled',
                 'attachments': [
@@ -1124,6 +1164,7 @@ class VolumeApiTest(test.TestCase):
                 'encrypted': False,
                 'availability_zone': 'fakeaz',
                 'bootable': 'false',
+                'consistencygroup_id': None,
                 'name': 'displayname',
                 'replication_status': 'disabled',
                 'attachments': [],
@@ -1182,6 +1223,7 @@ class VolumeApiTest(test.TestCase):
                 'encrypted': False,
                 'availability_zone': 'fakeaz',
                 'bootable': 'false',
+                'consistencygroup_id': None,
                 'name': 'displayname',
                 'replication_status': 'disabled',
                 'attachments': [
