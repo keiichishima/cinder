@@ -30,7 +30,7 @@ import re
 
 from oslo.config import cfg
 
-from cinder.brick.remotefs import remotefs
+from cinder.brick.remotefs import remotefs as remotefs_brick
 from cinder import exception
 from cinder.image import image_utils
 from cinder.openstack.common.gettextutils import _
@@ -39,7 +39,7 @@ from cinder.openstack.common import processutils as putils
 from cinder.openstack.common import units
 from cinder import utils
 from cinder.volume import driver
-from cinder.volume.drivers import nfs
+from cinder.volume.drivers import remotefs
 
 from libukai.ukai_config import UKAIConfig
 from libukai.ukai_metadata import ukai_metadata_create
@@ -60,7 +60,7 @@ volume_opts = [
 CONF = cfg.CONF
 CONF.register_opts(volume_opts)
 
-class UkaiDriver(nfs.RemoteFsDriver):
+class UkaiDriver(remotefs.RemoteFsDriver):
     '''UKAI based cinder driver.  '''
 
     driver_volume_type = 'ukai'
@@ -80,7 +80,7 @@ class UkaiDriver(nfs.RemoteFsDriver):
         opts = getattr(self.configuration,
                        'ukai_mount_options',
                        CONF.ukai_mount_options)
-        self._remotefsclient = remotefs.RemoteFsClient(
+        self._remotefsclient = remotefs_brick.RemoteFsClient(
             'ukai', root_helper, execute=execute,
             ukai_mount_point_base=self.base,
             ukai_mount_options=opts)
