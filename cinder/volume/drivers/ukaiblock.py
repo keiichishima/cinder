@@ -60,7 +60,7 @@ volume_opts = [
 CONF = cfg.CONF
 CONF.register_opts(volume_opts)
 
-class UkaiDriver(remotefs.RemoteFsDriver):
+class UkaiDriver(remotefs.RemoteFSDriver):
     '''UKAI based cinder driver.  '''
 
     driver_volume_type = 'ukai'
