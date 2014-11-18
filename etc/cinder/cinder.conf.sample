@@ -2442,8 +2442,9 @@
 # Deprecated group/name - [DATABASE]/sql_max_pool_size
 #max_pool_size=<None>
 
-# Maximum db connection retries during startup. Set to -1 to
-# specify an infinite retry count. (integer value)
+# Maximum number of database connection retries during
+# startup. Set to -1 to specify an infinite retry count.
+# (integer value)
 # Deprecated group/name - [DEFAULT]/sql_max_retries
 # Deprecated group/name - [DATABASE]/sql_max_retries
 #max_retries=10
@@ -2569,7 +2570,7 @@
 #
 
 # Authentication url for encryption service. (string value)
-#encryption_auth_url=http://localhost:5000/v2.0
+#encryption_auth_url=http://localhost:5000/v3
 
 # Url for encryption service. (string value)
 #encryption_api_url=http://localhost:9311/v1
